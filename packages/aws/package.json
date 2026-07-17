@@ -2,16 +2,16 @@
   "name": "@workflow-worlds/aws",
   "version": "0.1.0",
   "description": "AWS World implementation for Workflow DevKit (DynamoDB, SQS, EventBridge Scheduler, AppSync Events)",
-  "author": "Dustin Townsend",
+  "author": "Riacoding",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mizzle-dev/workflow-worlds.git",
+    "url": "git+https://github.com/riacoding/workflow-worlds.git",
     "directory": "packages/aws"
   },
-  "homepage": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/aws#readme",
+  "homepage": "https://github.com/riacoding/workflow-worlds/tree/main/packages/aws#readme",
   "bugs": {
-    "url": "https://github.com/mizzle-dev/workflow-worlds/issues"
+    "url": "https://github.com/riacoding/workflow-worlds/issues"
   },
   "type": "module",
   "main": "dist/index.js",
