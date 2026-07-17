@@ -219,6 +219,11 @@ With `WORKFLOW_AWS_AUTO_PROVISION=true` (default) the world creates the DynamoDB
 SQS queue on first use — convenient for dev, but in production you should provision
 infrastructure with IaC and set `WORKFLOW_AWS_AUTO_PROVISION=false`.
 
+**[`infra/`](infra/) has a ready-made AWS CDK project** that deploys exactly this — table, queue,
+scheduler group, and (unlike auto-provisioning) the IAM role the Scheduler needs to deliver to
+SQS — plus a script that turns the deployed resource names/ARNs straight into the `WORKFLOW_*`
+env vars below. See [`infra/README.md`](infra/README.md).
+
 **DynamoDB table:** `PK` (HASH) + `SK` (RANGE), two GSIs `GSI1` (`GSI1PK`/`GSI1SK`) and
 `GSI2` (`GSI2PK`/`GSI2SK`) projecting `ALL`, and TTL enabled on the `ttl` attribute.
 

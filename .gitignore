@@ -39,3 +39,9 @@ coverage/
 # Upstream e2e testing
 .e2e-upstream/
 .e2e-upstream-tarballs/
+
+# AWS CDK
+cdk.out/
+cdk-outputs.json
+.cdk.staging/
+cdk.context.json
