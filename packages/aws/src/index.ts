@@ -25,6 +25,7 @@ import {
 import { createStorage } from './storage.js';
 import { createQueue } from './queue.js';
 import { createStreamer } from './streamer.js';
+import { startLocalStack } from './local.js';
 import { debug } from './utils.js';
 
 export interface AwsWorldConfig extends AwsConfig {
@@ -54,6 +55,7 @@ export function createWorld(config: AwsWorldConfig = {}): World {
     tableName: resolved.tableName,
     queueName: resolved.queueName,
     autoProvision: resolved.autoProvision,
+    local: resolved.local,
   });
 
   let initPromise: Promise<Initialized> | null = null;
@@ -62,6 +64,12 @@ export function createWorld(config: AwsWorldConfig = {}): World {
     if (initPromise) return initPromise;
 
     initPromise = (async () => {
+      if (resolved.local) {
+        const { endpoint } = await startLocalStack();
+        resolved.endpoint = resolved.endpoint ?? endpoint;
+        resolved.credentials = resolved.credentials ?? { accessKeyId: 'test', secretAccessKey: 'test' };
+      }
+
       const clients = createAwsClients(resolved);
 
       if (resolved.autoProvision) {

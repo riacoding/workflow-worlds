@@ -30,6 +30,7 @@ settings use the `WORKFLOW_` prefix.
 |---------|-------------|---------|
 | `WORKFLOW_AWS_REGION` | AWS region | `us-east-1` |
 | `WORKFLOW_AWS_ENDPOINT` | Custom endpoint for all services (LocalStack / emulation) | — |
+| `WORKFLOW_AWS_LOCAL` | Auto-start a local LocalStack Docker container (DynamoDB + SQS) and point this World at it — for local dev/inspection without touching real AWS | `false` |
 | `WORKFLOW_AWS_ACCESS_KEY_ID` | Static access key (mainly for emulation) | default chain |
 | `WORKFLOW_AWS_SECRET_ACCESS_KEY` | Static secret key (mainly for emulation) | default chain |
 | `WORKFLOW_DYNAMODB_TABLE_NAME` | Single table name | `workflow` |
@@ -120,6 +121,58 @@ hooks, errors, nullByte) plus the `@workflow-worlds/testing` storage/streamer co
   and never fail startup.
 - **AppSync Events** is publish-only and best-effort; it is not required for tests and is a
   no-op unless `WORKFLOW_APPSYNC_EVENTS_ENDPOINT` is set.
+
+## Local development with Docker
+
+Setting `WORKFLOW_AWS_LOCAL=true` makes the World start its own [LocalStack](https://localstack.cloud)
+container (DynamoDB + SQS) on first use and point itself at it automatically — no manual
+endpoint, region, or credential setup needed, and nothing touches real AWS. Docker (or a
+compatible runtime) must be running. The container is ephemeral: it starts fresh each time the
+process starts and stops when the process receives `SIGINT`/`SIGTERM`.
+
+```bash
+WORKFLOW_TARGET_WORLD=./dist/index.js
+WORKFLOW_AWS_LOCAL=true
+WORKFLOW_DEBUG=aws-world   # optional: see container/init logs on stderr
+```
+
+### Building, packing, and installing into another project
+
+To try a local build of this package in a separate, already-existing project (rather than
+publishing to a registry), pack it into a tarball and install that directly:
+
+```bash
+# 1. From packages/aws — build
+cd packages/aws
+pnpm build
+
+# 2. Pack it into a tarball
+pnpm pack --pack-destination /tmp/workflow-aws-tarballs
+# -> /tmp/workflow-aws-tarballs/workflow-worlds-aws-0.1.0.tgz
+
+# 3. In the other project — install the tarball
+cd /path/to/your-project
+pnpm add /tmp/workflow-aws-tarballs/workflow-worlds-aws-0.1.0.tgz
+# (npm/yarn equivalents work too — it's a plain tarball install)
+
+# 4. Point the runtime at it and enable local mode
+export WORKFLOW_TARGET_WORLD=@workflow-worlds/aws
+export WORKFLOW_AWS_LOCAL=true
+export WORKFLOW_DEBUG=aws-world   # optional
+
+# 5. Run your project as usual
+pnpm dev
+```
+
+After any change to `packages/aws/src/*`, repeat steps 1–3 (rebuild, repack, reinstall) — a
+tarball install doesn't pick up source changes automatically the way a workspace `link:` would.
+
+To inspect local data, point the AWS CLI at the endpoint printed in the startup banner
+(credentials `test`/`test`, region matches `WORKFLOW_AWS_REGION`, default `us-west-2`):
+
+```bash
+aws --endpoint-url <endpoint-from-banner> dynamodb scan --table-name workflow
+```
 
 ## Provisioning for real AWS
 

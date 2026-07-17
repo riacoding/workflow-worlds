@@ -33,6 +33,7 @@
     "@aws-sdk/client-scheduler": "^3.700.0",
     "@aws-sdk/client-sqs": "^3.700.0",
     "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "@testcontainers/localstack": "^10.0.0",
     "@vercel/queue": "^0.0.0-alpha.29",
     "@workflow/errors": "4.1.0-beta.14",
     "@workflow/world": "4.1.0-beta.2",
@@ -40,7 +41,6 @@
     "zod": "^4.1.11"
   },
   "devDependencies": {
-    "@testcontainers/localstack": "^10.0.0",
     "@types/node": "^22.19.1",
     "@workflow-worlds/testing": "workspace:*",
     "@workflow/world-testing": "4.1.0-beta.54",
