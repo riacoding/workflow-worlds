@@ -21,6 +21,27 @@ Then point the runtime at it:
 WORKFLOW_TARGET_WORLD=@workflow-worlds/aws
 ```
 
+**Important:** your app must call `world.start()` itself. Neither `@workflow/core` nor
+`@workflow/next` ever call it for you, and the official Next.js quickstart docs don't mention it
+because the default managed (Vercel) backend doesn't need it — but this World's SQS worker is
+pull-based, so without an explicit `start()` call, runs/steps are written and messages are
+enqueued, but **nothing ever consumes them**. In a Next.js app, wire it up via the
+[instrumentation hook](https://nextjs.org/docs/app/guides/instrumentation):
+
+```typescript
+// instrumentation.ts (or src/instrumentation.ts if using a src/ directory)
+export async function register() {
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    const { getWorld } = await import('workflow/runtime')
+    const world = getWorld()
+    await world.start?.()
+  }
+}
+```
+
+No explicit shutdown call is needed — the worker registers its own `SIGTERM`/`SIGINT` handlers
+(see "Queue & worker semantics" below).
+
 ## Configuration
 
 Every option follows the priority **config value > env var > default**. Connection-style
@@ -172,6 +193,24 @@ To inspect local data, point the AWS CLI at the endpoint printed in the startup 
 
 ```bash
 aws --endpoint-url <endpoint-from-banner> dynamodb scan --table-name workflow
+```
+
+### Inspecting local runs with `workflow inspect`
+
+`npx workflow inspect runs` resolves its backend from `WORKFLOW_TARGET_WORLD` in the shell that
+invokes it — not from whatever env vars your dev server process was started with. Run it from a
+separate terminal and you'll get `Error: No workflow data directory found in "..."`, because the
+CLI silently fell back to its `local` (file-based) default. Point it at the same World, and at
+the **already-running** container rather than starting a new empty one (use `WORKFLOW_AWS_ENDPOINT`,
+not `WORKFLOW_AWS_LOCAL=true`):
+
+```bash
+WORKFLOW_TARGET_WORLD=@workflow-worlds/aws \
+WORKFLOW_AWS_ENDPOINT=<endpoint-from-banner> \
+WORKFLOW_AWS_ACCESS_KEY_ID=test \
+WORKFLOW_AWS_SECRET_ACCESS_KEY=test \
+WORKFLOW_AWS_REGION=us-west-2 \
+npx workflow inspect runs
 ```
 
 ## Provisioning for real AWS
