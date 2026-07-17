@@ -1,15 +1,15 @@
 {
-  "name": "@workflow-worlds/starter",
-  "version": "0.2.1",
-  "description": "Starter template for building Workflow DevKit Worlds",
+  "name": "@workflow-worlds/aws",
+  "version": "0.1.0",
+  "description": "AWS World implementation for Workflow DevKit (DynamoDB, SQS, EventBridge Scheduler, AppSync Events)",
   "author": "Dustin Townsend",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mizzle-dev/workflow-worlds.git",
-    "directory": "packages/starter"
+    "directory": "packages/aws"
   },
-  "homepage": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/starter#readme",
+  "homepage": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/aws#readme",
   "bugs": {
     "url": "https://github.com/mizzle-dev/workflow-worlds/issues"
   },
@@ -29,6 +29,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/client-scheduler": "^3.700.0",
+    "@aws-sdk/client-sqs": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
     "@vercel/queue": "^0.0.0-alpha.29",
     "@workflow/errors": "4.1.0-beta.14",
     "@workflow/world": "4.1.0-beta.2",
@@ -36,6 +40,7 @@
     "zod": "^4.1.11"
   },
   "devDependencies": {
+    "@testcontainers/localstack": "^10.0.0",
     "@types/node": "^22.19.1",
     "@workflow-worlds/testing": "workspace:*",
     "@workflow/world-testing": "4.1.0-beta.54",
@@ -48,8 +53,11 @@
   "keywords": [
     "workflow",
     "world",
-    "starter",
-    "template",
+    "aws",
+    "dynamodb",
+    "sqs",
+    "eventbridge",
+    "appsync",
     "durable-functions"
   ],
   "publishConfig": {
