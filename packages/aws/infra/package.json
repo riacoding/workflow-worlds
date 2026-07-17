@@ -9,9 +9,14 @@
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "synth": "cdk synth",
+    "synth:dev": "cdk synth -c projectName=myapp -c stage=dev",
     "diff": "cdk diff",
+    "diff:dev": "cdk diff -c projectName=myapp -c stage=dev",
+    "bootstrap:dev": "cdk bootstrap -c projectName=myapp -c stage=dev",
     "deploy": "cdk deploy --outputs-file cdk-outputs.json",
+    "deploy:dev": "cdk deploy --outputs-file cdk-outputs.json -c projectName=myapp -c stage=dev",
     "destroy": "cdk destroy",
+    "destroy:dev": "cdk destroy -c projectName=myapp -c stage=dev",
     "print-env": "node dist/scripts/print-env.js"
   },
   "dependencies": {
