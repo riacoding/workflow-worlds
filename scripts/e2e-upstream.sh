@@ -368,6 +368,8 @@ export COREPACK_ENABLE_STRICT=0
 log "Installing dependencies..."
 pnpm install --no-frozen-lockfile
 
+pnpm add --workspace-root  "$TARBALL_PATH"
+
 if [[ "$SKIP_BUILD" != "true" ]]; then
   log_step "Step 3b: Building upstream packages"
 
