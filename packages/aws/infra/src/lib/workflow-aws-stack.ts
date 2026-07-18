@@ -2,7 +2,7 @@ import { Stack, CfnOutput, RemovalPolicy, Duration, Aws } from 'aws-cdk-lib'
 import type { StackProps } from 'aws-cdk-lib'
 import { Table, AttributeType, BillingMode, ProjectionType } from 'aws-cdk-lib/aws-dynamodb'
 import { Queue } from 'aws-cdk-lib/aws-sqs'
-import { Role, ServicePrincipal, PolicyStatement, Effect } from 'aws-cdk-lib/aws-iam'
+import { Role, ServicePrincipal } from 'aws-cdk-lib/aws-iam'
 import { CfnScheduleGroup } from 'aws-cdk-lib/aws-scheduler'
 import type { Construct } from 'constructs'
 
@@ -86,24 +86,24 @@ export class WorkflowAwsStack extends Stack {
 
     const schedulerRole = new Role(this, 'SchedulerRole', {
       roleName: schedulerRoleName,
+      // NOTE: an additional ArnLike condition scoping aws:SourceArn to this
+      // schedule group is the AWS-documented pattern and does work at actual
+      // schedule-invocation time, but EventBridge Scheduler's CreateSchedule
+      // pre-flight validation has been observed to reject it outright with
+      // "The execution role you provide must allow AWS EventBridge Scheduler
+      // to assume the role" — a false negative confirmed via CloudTrail
+      // (the real sts:AssumeRole succeeds) that clears the moment the
+      // condition is dropped. Scoped to SourceAccount only; the role's
+      // permissions are still limited to sqs:SendMessage on this one queue.
       assumedBy: new ServicePrincipal('scheduler.amazonaws.com', {
         conditions: {
           StringEquals: { 'aws:SourceAccount': Aws.ACCOUNT_ID },
-          ArnLike: {
-            'aws:SourceArn': `arn:aws:scheduler:${Aws.REGION}:${Aws.ACCOUNT_ID}:schedule/${schedulerGroupName}/*`,
-          },
         },
       }),
     })
     schedulerRole.node.addDependency(schedulerGroup)
 
-    schedulerRole.addToPolicy(
-      new PolicyStatement({
-        effect: Effect.ALLOW,
-        actions: ['sqs:SendMessage'],
-        resources: [queue.queueArn],
-      }),
-    )
+    queue.grantSendMessages(schedulerRole)
 
     // -------------------------------------------------------------------
     // Outputs — consumed by scripts/print-env.ts to produce the exact
