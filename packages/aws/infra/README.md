@@ -73,6 +73,33 @@ To tear everything down:
 pnpm --filter @workflow-worlds/aws-infra destroy -- -c projectName=myapp -c stage=dev
 ```
 
+## `recreate-table` (dev convenience)
+
+Wipes all workflow data by deleting and recreating the DynamoDB table, instead of hand-deleting
+every item. It inspects the table first (status, item count, key schema, GSIs, TTL), then requires
+typing the table name back to confirm before deleting.
+
+```bash
+# Reads table name/region from cdk-outputs.json if omitted
+pnpm --filter @workflow-worlds/aws-infra recreate-table
+
+# Or pass explicitly
+pnpm --filter @workflow-worlds/aws-infra recreate-table -- myapp-dev-workflow
+
+# Inspect only, no delete
+pnpm --filter @workflow-worlds/aws-infra recreate-table -- myapp-dev-workflow --inspect-only
+
+# Skip the interactive confirmation (e.g. scripting)
+pnpm --filter @workflow-worlds/aws-infra recreate-table -- myapp-dev-workflow --yes
+```
+
+The recreated table's schema is hardcoded in `scripts/recreate-table.sh` to exactly mirror the
+`Table` construct in `src/lib/workflow-aws-stack.ts` (same name, `PK`/`SK`, `GSI1`, `GSI2`,
+`PAY_PER_REQUEST`, TTL on `ttl`) — this table is normally CDK-managed, so recreating it out of band
+only stays safe (i.e., a later `cdk diff` shows no changes) as long as those two definitions match.
+If you ever change the table's shape in the CDK stack, update the script to match. The script
+refuses to run against a table name containing `prod`.
+
 ## `print-env`
 
 Reads `cdk-outputs.json` (produced by `pnpm deploy`, which always passes `--outputs-file

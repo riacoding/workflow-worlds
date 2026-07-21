@@ -11,124 +11,113 @@
  *   delays beyond SQS's limit, an EventBridge Scheduler one-off schedule.
  */
 
-import { JsonTransport } from '@vercel/queue';
-import type {
-  Queue,
-  MessageId,
-  ValidQueueName,
-  QueuePrefix,
-} from '@workflow/world';
-import { GetCommand, PutCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { JsonTransport } from '@vercel/queue'
+import type { Queue, MessageId, ValidQueueName, QueuePrefix } from '@workflow/world'
+import { GetCommand, PutCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
 import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
   type SQSClient,
-} from '@aws-sdk/client-sqs';
-import {
-  CreateScheduleCommand,
-  type SchedulerClient,
-} from '@aws-sdk/client-scheduler';
-import { monotonicFactory } from 'ulid';
-import { z } from 'zod';
-import { debug } from './utils.js';
+} from '@aws-sdk/client-sqs'
+import { CreateScheduleCommand, type SchedulerClient } from '@aws-sdk/client-scheduler'
+import { monotonicFactory } from 'ulid'
+import { z } from 'zod'
+import { debug } from './utils.js'
 
-const generateUlid = monotonicFactory();
+const generateUlid = monotonicFactory()
 
 // TTL dedupe window: long enough to catch network retries (sub-second),
 // short enough to never interfere with legitimate continuations.
-const IDEMPOTENCY_TTL_MS = 5000;
+const IDEMPOTENCY_TTL_MS = 5000
 // SQS ChangeMessageVisibility ceiling (12 hours). Longer delays go to Scheduler.
-const MAX_SQS_DELAY_SECONDS = 43_200;
-const DEFAULT_MAX_RETRIES = 5;
+const MAX_SQS_DELAY_SECONDS = 43_200
+const DEFAULT_MAX_RETRIES = 5
 // Short visibility window so a message orphaned by a crashed/killed worker is
 // redelivered quickly. A heartbeat extends it while a message is actively being
 // processed, so legitimately slow work is not redelivered early.
-const VISIBILITY_TIMEOUT_S = 6;
-const HEARTBEAT_MS = 3000;
+const VISIBILITY_TIMEOUT_S = 6
+const HEARTBEAT_MS = 3000
 
 export interface QueueConfig {
   /** DynamoDB document client (idempotency records). */
-  ddb: DynamoDBDocumentClient;
+  ddb: DynamoDBDocumentClient
   /** SQS client. */
-  sqs: SQSClient;
+  sqs: SQSClient
   /** EventBridge Scheduler client (long delays). */
-  scheduler: SchedulerClient;
+  scheduler: SchedulerClient
   /** DynamoDB single-table name (idempotency records). */
-  tableName: string;
+  tableName: string
   /** Resolved SQS queue URL. */
-  queueUrl: string;
+  queueUrl: string
 
   /** Base URL for HTTP callbacks. Env: WORKFLOW_SERVICE_URL. Default http://localhost:{PORT}. */
-  baseUrl?: string;
+  baseUrl?: string
   /** Max concurrent message processing. Env: WORKFLOW_CONCURRENCY. Default 20. */
-  concurrency?: number;
+  concurrency?: number
   /** Max delivery attempts before dropping a message. Default 5. */
-  maxRetries?: number;
+  maxRetries?: number
 
   /** Scheduler group for long-delay schedules. */
-  schedulerGroupName?: string;
+  schedulerGroupName?: string
   /** IAM role ARN the scheduler assumes to deliver to SQS. */
-  schedulerRoleArn?: string;
+  schedulerRoleArn?: string
   /** ARN of the SQS queue (scheduler target). */
-  queueArn?: string;
+  queueArn?: string
 }
 
 interface QueueEnvelope {
-  queueName: ValidQueueName;
-  messageId: MessageId;
+  queueName: ValidQueueName
+  messageId: MessageId
   /** base64-encoded serialized payload. */
-  payload: string;
+  payload: string
 }
 
 function getBaseUrl(configBaseUrl?: string): string {
-  if (configBaseUrl) return configBaseUrl;
-  if (process.env.WORKFLOW_SERVICE_URL) return process.env.WORKFLOW_SERVICE_URL;
-  const port = process.env.PORT ?? '3000';
-  return `http://localhost:${port}`;
+  if (configBaseUrl) return configBaseUrl
+  if (process.env.WORKFLOW_SERVICE_URL) return process.env.WORKFLOW_SERVICE_URL
+  const port = process.env.PORT ?? '3000'
+  return `http://localhost:${port}`
 }
 
 export function createQueue(config: QueueConfig): {
-  queue: Queue;
-  start: () => Promise<void>;
-  close: () => Promise<void>;
+  queue: Queue
+  start: () => Promise<void>
+  close: () => Promise<void>
 } {
-  const { ddb, sqs, scheduler, tableName, queueUrl } = config;
-  const transport = new JsonTransport();
-  const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const { ddb, sqs, scheduler, tableName, queueUrl } = config
+  const transport = new JsonTransport()
+  const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES
 
   const maxConcurrency =
-    config.concurrency ??
-    (process.env.WORKFLOW_CONCURRENCY
-      ? parseInt(process.env.WORKFLOW_CONCURRENCY, 10)
-      : 20);
+    config.concurrency ?? (process.env.WORKFLOW_CONCURRENCY ? parseInt(process.env.WORKFLOW_CONCURRENCY, 10) : 20)
 
-  let currentConcurrency = 0;
-  const waitQueue: Array<() => void> = [];
+  let currentConcurrency = 0
+  const waitQueue: Array<() => void> = []
 
   async function acquireConcurrency(): Promise<void> {
     if (currentConcurrency < maxConcurrency) {
-      currentConcurrency++;
-      return;
+      currentConcurrency++
+      return
     }
-    return new Promise((resolve) => waitQueue.push(resolve));
+    return new Promise((resolve) => waitQueue.push(resolve))
   }
 
   function releaseConcurrency(): void {
-    const next = waitQueue.shift();
-    if (next) next();
-    else currentConcurrency--;
+    const next = waitQueue.shift()
+    if (next) next()
+    else currentConcurrency--
   }
 
-  let running = false;
-  let shuttingDown = false;
-  let loopPromise: Promise<void> | null = null;
-  const inflight = new Set<Promise<void>>();
+  let running = false
+  let shuttingDown = false
+  let loopPromise: Promise<void> | null = null
+  const inflight = new Set<Promise<void>>()
   // messageId -> receiptHandle for messages currently being processed, so a
   // graceful shutdown can release them (visibility 0) for immediate redelivery.
-  const inflightHandles = new Map<string, string>();
-  let signalHandlersRegistered = false;
+  const inflightHandles = new Map<string, string>()
+  let signalHandlersRegistered = false
 
   // ---------------------------------------------------------------------------
   // Idempotency (DynamoDB conditional write with a short TTL window)
@@ -136,10 +125,10 @@ export function createQueue(config: QueueConfig): {
 
   async function reserveIdempotencyKey(
     key: string,
-    messageId: MessageId
+    messageId: MessageId,
   ): Promise<{ duplicate: false } | { duplicate: true; messageId: MessageId }> {
-    const now = Date.now();
-    const pk = `IDEMPOTENCY#${key}`;
+    const now = Date.now()
+    const pk = `IDEMPOTENCY#${key}`
     try {
       await ddb.send(
         new PutCommand({
@@ -154,25 +143,22 @@ export function createQueue(config: QueueConfig): {
             ttl: Math.floor((now + 60_000) / 1000),
           },
           // Reserve if no live record exists (absent, or expired past the window).
-          ConditionExpression:
-            'attribute_not_exists(PK) OR expiresAt < :now',
+          ConditionExpression: 'attribute_not_exists(PK) OR expiresAt < :now',
           ExpressionAttributeValues: { ':now': now },
-        })
-      );
-      return { duplicate: false };
+        }),
+      )
+      return { duplicate: false }
     } catch (err) {
       if (
         typeof err === 'object' &&
         err !== null &&
         (err as { name?: string }).name === 'ConditionalCheckFailedException'
       ) {
-        const existing = await ddb.send(
-          new GetCommand({ TableName: tableName, Key: { PK: pk, SK: pk } })
-        );
-        const existingId = existing.Item?.messageId as MessageId | undefined;
-        return { duplicate: true, messageId: existingId ?? messageId };
+        const existing = await ddb.send(new GetCommand({ TableName: tableName, Key: { PK: pk, SK: pk } }))
+        const existingId = existing.Item?.messageId as MessageId | undefined
+        return { duplicate: true, messageId: existingId ?? messageId }
       }
-      throw err;
+      throw err
     }
   }
 
@@ -180,20 +166,15 @@ export function createQueue(config: QueueConfig): {
   // Long-delay scheduling via EventBridge Scheduler
   // ---------------------------------------------------------------------------
 
-  async function scheduleReenqueue(
-    envelope: QueueEnvelope,
-    atMs: number
-  ): Promise<boolean> {
+  async function scheduleReenqueue(envelope: QueueEnvelope, atMs: number): Promise<boolean> {
     if (!config.queueArn || !config.schedulerRoleArn) {
-      debug(
-        'Long delay requested but scheduler role/queue ARN not configured; skipping'
-      );
-      return false;
+      debug('Long delay requested but scheduler role/queue ARN not configured; skipping')
+      return false
     }
     try {
-      const at = new Date(atMs);
+      const at = new Date(atMs)
       // Scheduler expects at(yyyy-mm-ddThh:mm:ss) with no milliseconds/zone.
-      const atExpr = `at(${at.toISOString().split('.')[0]})`;
+      const atExpr = `at(${at.toISOString().split('.')[0]})`
       await scheduler.send(
         new CreateScheduleCommand({
           Name: `wkf-${envelope.messageId}`,
@@ -206,12 +187,12 @@ export function createQueue(config: QueueConfig): {
             RoleArn: config.schedulerRoleArn,
             Input: JSON.stringify(envelope),
           },
-        })
-      );
-      return true;
+        }),
+      )
+      return true
     } catch (err) {
-      debug('scheduleReenqueue failed (non-fatal):', String(err));
-      return false;
+      debug('scheduleReenqueue failed (non-fatal):', String(err))
+      return false
     }
   }
 
@@ -219,17 +200,11 @@ export function createQueue(config: QueueConfig): {
   // Message processing
   // ---------------------------------------------------------------------------
 
-  async function processMessage(
-    envelope: QueueEnvelope,
-    receiptHandle: string,
-    attempt: number
-  ): Promise<void> {
-    const pathname = envelope.queueName.startsWith('__wkf_step_')
-      ? 'step'
-      : 'flow';
-    const body = Buffer.from(envelope.payload, 'base64');
+  async function processMessage(envelope: QueueEnvelope, receiptHandle: string, attempt: number): Promise<void> {
+    const pathname = envelope.queueName.startsWith('__wkf_step_') ? 'step' : 'flow'
+    const body = Buffer.from(envelope.payload, 'base64')
 
-    inflightHandles.set(envelope.messageId, receiptHandle);
+    inflightHandles.set(envelope.messageId, receiptHandle)
     // Keep the message invisible while we actively work on it. If this worker
     // crashes or is killed, the heartbeat stops and the message reappears after
     // VISIBILITY_TIMEOUT_S instead of being stuck for a long visibility window.
@@ -240,48 +215,45 @@ export function createQueue(config: QueueConfig): {
             QueueUrl: queueUrl,
             ReceiptHandle: receiptHandle,
             VisibilityTimeout: VISIBILITY_TIMEOUT_S,
-          })
+          }),
         )
-        .catch(() => {});
-    }, HEARTBEAT_MS);
+        .catch(() => {})
+    }, HEARTBEAT_MS)
 
-    const stopHeartbeat = () => clearInterval(heartbeat);
+    const stopHeartbeat = () => clearInterval(heartbeat)
 
     try {
-      const response = await fetch(
-        `${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${pathname}`,
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-vqs-queue-name': envelope.queueName,
-            'x-vqs-message-id': envelope.messageId,
-            'x-vqs-message-attempt': String(attempt),
-          },
-          body,
-        }
-      );
-      stopHeartbeat();
+      const response = await fetch(`${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${pathname}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-vqs-queue-name': envelope.queueName,
+          'x-vqs-message-id': envelope.messageId,
+          'x-vqs-message-attempt': String(attempt),
+        },
+        body,
+      })
+      stopHeartbeat()
 
       if (response.ok) {
         await sqs.send(
           new DeleteMessageCommand({
             QueueUrl: queueUrl,
             ReceiptHandle: receiptHandle,
-          })
-        );
-        return;
+          }),
+        )
+        return
       }
 
-      const text = await response.text();
+      const text = await response.text()
 
       // 503 { timeoutSeconds } is a scheduled retry, not a failure.
       if (response.status === 503) {
         try {
-          const { timeoutSeconds } = JSON.parse(text);
+          const { timeoutSeconds } = JSON.parse(text)
           if (typeof timeoutSeconds === 'number') {
-            await deferMessage(envelope, receiptHandle, timeoutSeconds);
-            return;
+            await deferMessage(envelope, receiptHandle, timeoutSeconds)
+            return
           }
         } catch {
           // fall through to failure handling
@@ -293,47 +265,40 @@ export function createQueue(config: QueueConfig): {
         queueName: envelope.queueName,
         status: response.status,
         attempt,
-      });
-      await handleFailure(envelope, receiptHandle, attempt);
+      })
+      await handleFailure(envelope, receiptHandle, attempt)
     } catch (err) {
-      stopHeartbeat();
-      debug('Network error processing message:', String(err));
-      await handleFailure(envelope, receiptHandle, attempt);
+      stopHeartbeat()
+      debug('Network error processing message:', String(err))
+      await handleFailure(envelope, receiptHandle, attempt)
     } finally {
-      stopHeartbeat();
-      inflightHandles.delete(envelope.messageId);
+      stopHeartbeat()
+      inflightHandles.delete(envelope.messageId)
     }
   }
 
   /** Defer redelivery of a message by N seconds (SQS visibility or Scheduler). */
-  async function deferMessage(
-    envelope: QueueEnvelope,
-    receiptHandle: string,
-    delaySeconds: number
-  ): Promise<void> {
+  async function deferMessage(envelope: QueueEnvelope, receiptHandle: string, delaySeconds: number): Promise<void> {
     if (delaySeconds <= MAX_SQS_DELAY_SECONDS) {
       await sqs.send(
         new ChangeMessageVisibilityCommand({
           QueueUrl: queueUrl,
           ReceiptHandle: receiptHandle,
           VisibilityTimeout: Math.max(0, Math.ceil(delaySeconds)),
-        })
-      );
-      return;
+        }),
+      )
+      return
     }
     // Beyond SQS's window: hand off to EventBridge Scheduler and drop the
     // in-flight SQS message so it is not redelivered early.
-    const scheduled = await scheduleReenqueue(
-      envelope,
-      Date.now() + delaySeconds * 1000
-    );
+    const scheduled = await scheduleReenqueue(envelope, Date.now() + delaySeconds * 1000)
     if (scheduled) {
       await sqs.send(
         new DeleteMessageCommand({
           QueueUrl: queueUrl,
           ReceiptHandle: receiptHandle,
-        })
-      );
+        }),
+      )
     } else {
       // Could not schedule; keep it in SQS at the max visibility delay.
       await sqs.send(
@@ -341,40 +306,33 @@ export function createQueue(config: QueueConfig): {
           QueueUrl: queueUrl,
           ReceiptHandle: receiptHandle,
           VisibilityTimeout: MAX_SQS_DELAY_SECONDS,
-        })
-      );
+        }),
+      )
     }
   }
 
-  async function handleFailure(
-    envelope: QueueEnvelope,
-    receiptHandle: string,
-    attempt: number
-  ): Promise<void> {
+  async function handleFailure(envelope: QueueEnvelope, receiptHandle: string, attempt: number): Promise<void> {
     if (attempt >= maxRetries) {
       // Exhausted retries: drop the message (a DLQ redrive policy would catch
       // this in production).
-      debug('Max retries reached, dropping message:', envelope.messageId);
+      debug('Max retries reached, dropping message:', envelope.messageId)
       await sqs.send(
         new DeleteMessageCommand({
           QueueUrl: queueUrl,
           ReceiptHandle: receiptHandle,
-        })
-      );
-      return;
+        }),
+      )
+      return
     }
     // Exponential backoff (1s, 2s, 4s, ...) via SQS visibility timeout.
-    const backoff = Math.min(
-      MAX_SQS_DELAY_SECONDS,
-      Math.pow(2, attempt - 1)
-    );
+    const backoff = Math.min(MAX_SQS_DELAY_SECONDS, Math.pow(2, attempt - 1))
     await sqs.send(
       new ChangeMessageVisibilityCommand({
         QueueUrl: queueUrl,
         ReceiptHandle: receiptHandle,
         VisibilityTimeout: backoff,
-      })
-    );
+      }),
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -383,7 +341,7 @@ export function createQueue(config: QueueConfig): {
 
   async function pollLoop(): Promise<void> {
     while (running && !shuttingDown) {
-      let received;
+      let received
       try {
         received = await sqs.send(
           new ReceiveMessageCommand({
@@ -393,43 +351,41 @@ export function createQueue(config: QueueConfig): {
             VisibilityTimeout: VISIBILITY_TIMEOUT_S,
             MessageAttributeNames: ['All'],
             MessageSystemAttributeNames: ['ApproximateReceiveCount'],
-          })
-        );
+          }),
+        )
       } catch (err) {
-        if (!shuttingDown) debug('ReceiveMessage error:', String(err));
-        await new Promise((r) => setTimeout(r, 250));
-        continue;
+        if (!shuttingDown) debug('ReceiveMessage error:', String(err))
+        await new Promise((r) => setTimeout(r, 250))
+        continue
       }
 
-      const messages = received.Messages ?? [];
+      const messages = received.Messages ?? []
       for (const msg of messages) {
-        if (!msg.Body || !msg.ReceiptHandle) continue;
+        if (!msg.Body || !msg.ReceiptHandle) continue
 
-        let envelope: QueueEnvelope;
+        let envelope: QueueEnvelope
         try {
-          envelope = JSON.parse(msg.Body) as QueueEnvelope;
+          envelope = JSON.parse(msg.Body) as QueueEnvelope
         } catch (err) {
-          debug('Malformed message body, deleting:', String(err));
+          debug('Malformed message body, deleting:', String(err))
           await sqs.send(
             new DeleteMessageCommand({
               QueueUrl: queueUrl,
               ReceiptHandle: msg.ReceiptHandle,
-            })
-          );
-          continue;
+            }),
+          )
+          continue
         }
 
-        const attempt = Number(
-          msg.Attributes?.ApproximateReceiveCount ?? '1'
-        );
+        const attempt = Number(msg.Attributes?.ApproximateReceiveCount ?? '1')
 
-        await acquireConcurrency();
-        const receiptHandle = msg.ReceiptHandle;
+        await acquireConcurrency()
+        const receiptHandle = msg.ReceiptHandle
         const task = processMessage(envelope, receiptHandle, attempt)
           .catch((err) => debug('processMessage error:', String(err)))
-          .finally(() => releaseConcurrency());
-        inflight.add(task);
-        task.finally(() => inflight.delete(task));
+          .finally(() => releaseConcurrency())
+        inflight.add(task)
+        task.finally(() => inflight.delete(task))
       }
     }
   }
@@ -440,39 +396,33 @@ export function createQueue(config: QueueConfig): {
 
   const queue: Queue = {
     async getDeploymentId(): Promise<string> {
-      return process.env.DEPLOYMENT_ID ?? 'dpl_aws';
+      return process.env.DEPLOYMENT_ID ?? 'dpl_aws'
     },
 
     async queue(
       queueName: ValidQueueName,
       message: unknown,
-      opts?: { deploymentId?: string; idempotencyKey?: string }
+      opts?: { deploymentId?: string; idempotencyKey?: string },
     ): Promise<{ messageId: MessageId }> {
-      if (
-        !queueName.startsWith('__wkf_step_') &&
-        !queueName.startsWith('__wkf_workflow_')
-      ) {
-        throw new Error(`Unknown queue prefix in: ${queueName}`);
+      if (!queueName.startsWith('__wkf_step_') && !queueName.startsWith('__wkf_workflow_')) {
+        throw new Error(`Unknown queue prefix in: ${queueName}`)
       }
 
-      const messageId = `msg_${generateUlid()}` as MessageId;
+      const messageId = `msg_${generateUlid()}` as MessageId
 
       if (opts?.idempotencyKey) {
-        const reservation = await reserveIdempotencyKey(
-          opts.idempotencyKey,
-          messageId
-        );
+        const reservation = await reserveIdempotencyKey(opts.idempotencyKey, messageId)
         if (reservation.duplicate) {
-          return { messageId: reservation.messageId };
+          return { messageId: reservation.messageId }
         }
       }
 
-      const serialized = transport.serialize(message);
+      const serialized = transport.serialize(message)
       const envelope: QueueEnvelope = {
         queueName,
         messageId,
         payload: Buffer.from(serialized).toString('base64'),
-      };
+      }
 
       await sqs.send(
         new SendMessageCommand({
@@ -482,10 +432,10 @@ export function createQueue(config: QueueConfig): {
             queueName: { DataType: 'String', StringValue: queueName },
             messageId: { DataType: 'String', StringValue: messageId },
           },
-        })
-      );
+        }),
+      )
 
-      return { messageId };
+      return { messageId }
     },
 
     createQueueHandler(
@@ -493,58 +443,53 @@ export function createQueue(config: QueueConfig): {
       handler: (
         message: unknown,
         meta: {
-          attempt: number;
-          queueName: ValidQueueName;
-          messageId: MessageId;
-        }
-      ) => Promise<void | { timeoutSeconds: number }>
+          attempt: number
+          queueName: ValidQueueName
+          messageId: MessageId
+        },
+      ) => Promise<void | { timeoutSeconds: number }>,
     ): (req: Request) => Promise<Response> {
       const HeaderParser = z.object({
         'x-vqs-queue-name': z.string(),
         'x-vqs-message-id': z.string(),
         'x-vqs-message-attempt': z.coerce.number(),
-      });
+      })
 
       return async (req: Request): Promise<Response> => {
-        const headers = HeaderParser.safeParse(Object.fromEntries(req.headers));
+        const headers = HeaderParser.safeParse(Object.fromEntries(req.headers))
 
         if (!headers.success || !req.body) {
           return Response.json(
             {
-              error: !req.body
-                ? 'Missing request body'
-                : 'Missing required headers',
+              error: !req.body ? 'Missing request body' : 'Missing required headers',
             },
-            { status: 400 }
-          );
+            { status: 400 },
+          )
         }
 
-        const queueName = headers.data['x-vqs-queue-name'] as ValidQueueName;
-        const messageId = headers.data['x-vqs-message-id'] as MessageId;
-        const attempt = headers.data['x-vqs-message-attempt'];
+        const queueName = headers.data['x-vqs-queue-name'] as ValidQueueName
+        const messageId = headers.data['x-vqs-message-id'] as MessageId
+        const attempt = headers.data['x-vqs-message-attempt']
 
         if (!queueName.startsWith(prefix)) {
-          return Response.json({ error: 'Unhandled queue' }, { status: 400 });
+          return Response.json({ error: 'Unhandled queue' }, { status: 400 })
         }
 
-        const body = await new JsonTransport().deserialize(req.body);
+        const body = await new JsonTransport().deserialize(req.body)
 
         try {
-          const result = await handler(body, { attempt, queueName, messageId });
+          const result = await handler(body, { attempt, queueName, messageId })
           if (result?.timeoutSeconds) {
-            return Response.json(
-              { timeoutSeconds: result.timeoutSeconds },
-              { status: 503 }
-            );
+            return Response.json({ timeoutSeconds: result.timeoutSeconds }, { status: 503 })
           }
-          return Response.json({ ok: true });
+          return Response.json({ ok: true })
         } catch (error) {
-          debug('Handler error:', error);
-          return Response.json(String(error), { status: 500 });
+          debug('Handler error:', error)
+          return Response.json(String(error), { status: 500 })
         }
-      };
+      }
     },
-  };
+  }
 
   async function releaseInflight(): Promise<void> {
     // Make in-flight messages immediately visible again so another worker can
@@ -556,44 +501,44 @@ export function createQueue(config: QueueConfig): {
             QueueUrl: queueUrl,
             ReceiptHandle: receiptHandle,
             VisibilityTimeout: 0,
-          })
-        )
-      )
-    );
+          }),
+        ),
+      ),
+    )
   }
 
   async function start(): Promise<void> {
-    if (running) return;
-    running = true;
-    shuttingDown = false;
-    debug('Starting SQS worker on queue:', queueUrl);
-    loopPromise = pollLoop();
+    if (running) return
+    running = true
+    shuttingDown = false
+    debug('Starting SQS worker on queue:', queueUrl)
+    loopPromise = pollLoop()
 
     if (!signalHandlersRegistered) {
-      signalHandlersRegistered = true;
+      signalHandlersRegistered = true
       const onSignal = () => {
         void (async () => {
           try {
-            await close();
+            await close()
           } finally {
-            process.exit(0);
+            process.exit(0)
           }
-        })();
-      };
-      process.once('SIGTERM', onSignal);
-      process.once('SIGINT', onSignal);
+        })()
+      }
+      process.once('SIGTERM', onSignal)
+      process.once('SIGINT', onSignal)
     }
   }
 
   async function close(): Promise<void> {
-    if (!running) return;
-    shuttingDown = true;
-    running = false;
-    await releaseInflight();
-    await loopPromise?.catch(() => {});
-    await Promise.allSettled([...inflight]);
-    debug('SQS worker stopped');
+    if (!running) return
+    shuttingDown = true
+    running = false
+    await releaseInflight()
+    await loopPromise?.catch(() => {})
+    await Promise.allSettled([...inflight])
+    debug('SQS worker stopped')
   }
 
-  return { queue, start, close };
+  return { queue, start, close }
 }

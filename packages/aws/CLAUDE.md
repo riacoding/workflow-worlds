@@ -45,5 +45,5 @@ pnpm typecheck      # tsc --noEmit
 
 ## Error handling
 
-Use `WorkflowAPIError` from `@workflow/errors` (404 not found, 409 conflict) — never plain
+Use `WorkflowWorldError` from `@workflow/errors` (404 not found, 409 conflict) — never plain
 `Error` (yields a generic 500).

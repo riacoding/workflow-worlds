@@ -13,7 +13,12 @@
  */
 
 import { EventEmitter } from 'node:events';
-import type { Streamer } from '@workflow/world';
+import type {
+  GetChunksOptions,
+  Streamer,
+  StreamChunksResponse,
+  StreamInfoResponse,
+} from '@workflow/world';
 import {
   PutCommand,
   QueryCommand,
@@ -164,11 +169,10 @@ export function createStreamer(config: DynamoStreamerConfig): Streamer {
   return {
     async writeToStream(
       name: string,
-      runId: string | Promise<string>,
+      runId: string,
       chunk: string | Uint8Array
     ): Promise<void> {
-      const resolvedRunId = await runId;
-      await registerStream(resolvedRunId, name);
+      await registerStream(runId, name);
 
       const data =
         typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
@@ -186,10 +190,9 @@ export function createStreamer(config: DynamoStreamerConfig): Streamer {
 
     async closeStream(
       name: string,
-      runId: string | Promise<string>
+      runId: string
     ): Promise<void> {
-      const resolvedRunId = await runId;
-      await registerStream(resolvedRunId, name);
+      await registerStream(runId, name);
 
       const streamChunk: StreamChunk = {
         chunkId: `chnk_${generateUlid()}`,
@@ -201,6 +204,46 @@ export function createStreamer(config: DynamoStreamerConfig): Streamer {
       await persistChunk(streamChunk);
       emitter.emit(`close:${name}`);
       await publishToAppsync(name, streamChunk);
+    },
+
+    async getStreamChunks(
+      name: string,
+      _runId: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const all = await loadChunks(name);
+      const dataChunks = all.filter((c) => !c.eof);
+      const done = all.some((c) => c.eof);
+
+      const limit = options?.limit ?? 100;
+      let startIdx = 0;
+      if (options?.cursor) {
+        const cursorIdx = Number(options.cursor);
+        startIdx = Number.isFinite(cursorIdx) ? cursorIdx + 1 : 0;
+      }
+
+      const windowed = dataChunks.slice(startIdx, startIdx + limit);
+      const hasMore = startIdx + limit < dataChunks.length;
+
+      return {
+        data: windowed.map((chunk, i) => ({
+          index: startIdx + i,
+          data: chunk.data,
+        })),
+        cursor: hasMore ? String(startIdx + windowed.length - 1) : null,
+        hasMore,
+        done,
+      };
+    },
+
+    async getStreamInfo(name: string, _runId: string): Promise<StreamInfoResponse> {
+      const all = await loadChunks(name);
+      const dataChunks = all.filter((c) => !c.eof);
+      const done = all.some((c) => c.eof);
+      return {
+        tailIndex: dataChunks.length - 1,
+        done,
+      };
     },
 
     async listStreamsByRunId(runId: string): Promise<string[]> {

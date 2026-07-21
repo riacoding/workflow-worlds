@@ -21,7 +21,7 @@
 
 import {
   RunNotSupportedError,
-  WorkflowAPIError,
+  WorkflowWorldError,
   WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import {
@@ -32,6 +32,7 @@ import {
   type CreateEventParams,
   type Event,
   type EventResult,
+  type GetEventParams,
   type GetHookParams,
   type GetStepParams,
   type GetWorkflowRunParams,
@@ -56,6 +57,7 @@ import {
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
 import { monotonicFactory } from 'ulid';
+import { cborDecode, cborEncode } from './cbor.js';
 import { debug, decodeJson, deepClone, encodeJson } from './utils.js';
 
 const generateUlid = monotonicFactory();
@@ -79,6 +81,16 @@ interface StoredItem {
   workflowName?: string;
   correlationId?: string;
   doc: string;
+  // Spec-version-3 payload fields, stored as raw CBOR bytes (see docs/Schema-spec3-update.md).
+  // The equivalently-named plain JSON attribute (input, output, executionContext, error,
+  // metadata, payload) is reserved for a future legacy-fallback read path but is never written
+  // or read by this implementation — there is no pre-existing data to stay compatible with.
+  inputCbor?: Uint8Array;
+  outputCbor?: Uint8Array;
+  executionContextCbor?: Uint8Array;
+  errorCbor?: Uint8Array;
+  metadataCbor?: Uint8Array;
+  payloadCbor?: Uint8Array;
 }
 
 const runPK = (runId: string) => `RUN#${runId}`;
@@ -88,6 +100,7 @@ const eventSK = (eventId: string) => `EVENT#${eventId}`;
 const hookSK = (hookId: string) => `HOOK#${hookId}`;
 
 function runItem(run: WorkflowRun): StoredItem {
+  const { input, output, executionContext, error, ...envelope } = run;
   return {
     PK: runPK(run.runId),
     SK: runSK(run.runId),
@@ -97,11 +110,16 @@ function runItem(run: WorkflowRun): StoredItem {
     runId: run.runId,
     status: run.status,
     workflowName: run.workflowName,
-    doc: encodeJson(run),
+    doc: encodeJson(envelope),
+    inputCbor: cborEncode(input),
+    outputCbor: cborEncode(output),
+    executionContextCbor: cborEncode(executionContext),
+    errorCbor: cborEncode(error),
   };
 }
 
 function stepItem(step: Step): StoredItem {
+  const { input, output, error, ...envelope } = step;
   return {
     PK: runPK(step.runId),
     SK: stepSK(step.stepId),
@@ -110,17 +128,22 @@ function stepItem(step: Step): StoredItem {
     entity: 'step',
     runId: step.runId,
     status: step.status,
-    doc: encodeJson(step),
+    doc: encodeJson(envelope),
+    inputCbor: cborEncode(input),
+    outputCbor: cborEncode(output),
+    errorCbor: cborEncode(error),
   };
 }
 
 function eventItem(event: Event): StoredItem {
+  const { eventData, ...envelope } = event as Event & { eventData?: unknown };
   const item: StoredItem = {
     PK: runPK(event.runId),
     SK: eventSK(event.eventId),
     entity: 'event',
     runId: event.runId,
-    doc: encodeJson(event),
+    doc: encodeJson(envelope),
+    payloadCbor: cborEncode(eventData),
   };
   if (event.correlationId) {
     item.GSI1PK = `CORR#${event.correlationId}`;
@@ -131,6 +154,7 @@ function eventItem(event: Event): StoredItem {
 }
 
 function hookItem(hook: Hook): StoredItem {
+  const { metadata, ...envelope } = hook;
   return {
     PK: runPK(hook.runId),
     SK: hookSK(hook.hookId),
@@ -140,13 +164,60 @@ function hookItem(hook: Hook): StoredItem {
     GSI2SK: `TOKEN#${hook.token}`,
     entity: 'hook',
     runId: hook.runId,
-    doc: encodeJson(hook),
+    doc: encodeJson(envelope),
+    metadataCbor: cborEncode(metadata),
   };
 }
 
-function readDoc<T>(item: Record<string, unknown> | undefined): T | null {
+// NOTE: each field below is only overwritten when its *Cbor attribute is
+// actually present. Rows written before this change (or by anything that
+// hasn't cut over yet) still carry these fields inline in `doc` — falling
+// back to the decoded envelope value instead of blindly assigning
+// `cborDecode(undefined)` (=== undefined) avoids silently wiping out data
+// that's still perfectly readable on disk.
+
+function readRun(item: Record<string, unknown> | undefined): WorkflowRun | null {
   if (!item || typeof item.doc !== 'string') return null;
-  return decodeJson<T>(item.doc);
+  const run = decodeJson<WorkflowRun>(item.doc);
+  const input = cborDecode<WorkflowRun['input']>(item.inputCbor as Uint8Array | undefined);
+  if (input !== undefined) run.input = input;
+  const output = cborDecode<WorkflowRun['output']>(item.outputCbor as Uint8Array | undefined);
+  if (output !== undefined) run.output = output;
+  const executionContext = cborDecode<WorkflowRun['executionContext']>(
+    item.executionContextCbor as Uint8Array | undefined
+  );
+  if (executionContext !== undefined) run.executionContext = executionContext;
+  const error = cborDecode<WorkflowRun['error']>(item.errorCbor as Uint8Array | undefined);
+  if (error !== undefined) run.error = error;
+  return run;
+}
+
+function readStep(item: Record<string, unknown> | undefined): Step | null {
+  if (!item || typeof item.doc !== 'string') return null;
+  const step = decodeJson<Step>(item.doc);
+  const input = cborDecode<Step['input']>(item.inputCbor as Uint8Array | undefined);
+  if (input !== undefined) step.input = input;
+  const output = cborDecode<Step['output']>(item.outputCbor as Uint8Array | undefined);
+  if (output !== undefined) step.output = output;
+  const error = cborDecode<Step['error']>(item.errorCbor as Uint8Array | undefined);
+  if (error !== undefined) step.error = error;
+  return step;
+}
+
+function readHook(item: Record<string, unknown> | undefined): Hook | null {
+  if (!item || typeof item.doc !== 'string') return null;
+  const hook = decodeJson<Hook>(item.doc);
+  const metadata = cborDecode<Hook['metadata']>(item.metadataCbor as Uint8Array | undefined);
+  if (metadata !== undefined) hook.metadata = metadata;
+  return hook;
+}
+
+function readEvent(item: Record<string, unknown> | undefined): Event | null {
+  if (!item || typeof item.doc !== 'string') return null;
+  const envelope = decodeJson<Event>(item.doc);
+  const eventData = cborDecode(item.payloadCbor as Uint8Array | undefined);
+  if (eventData === undefined) return envelope;
+  return { ...envelope, eventData } as Event;
 }
 
 // =============================================================================
@@ -274,7 +345,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         Key: { PK: runPK(runId), SK: runSK(runId) },
       })
     );
-    return readDoc<WorkflowRun>(res.Item);
+    return readRun(res.Item);
   }
 
   async function putRun(run: WorkflowRun): Promise<void> {
@@ -288,7 +359,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         Key: { PK: runPK(runId), SK: stepSK(stepId) },
       })
     );
-    return readDoc<Step>(res.Item);
+    return readStep(res.Item);
   }
 
   async function getStepByStepId(stepId: string): Promise<Step | null> {
@@ -299,7 +370,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       ExpressionAttributeValues: { ':pk': stepSK(stepId) },
       Limit: 1,
     });
-    return items.length ? readDoc<Step>(items[0]) : null;
+    return items.length ? readStep(items[0]) : null;
   }
 
   async function putStep(step: Step): Promise<void> {
@@ -318,7 +389,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       ExpressionAttributeValues: { ':pk': hookSK(hookId) },
       Limit: 1,
     });
-    return items.length ? readDoc<Hook>(items[0]) : null;
+    return items.length ? readHook(items[0]) : null;
   }
 
   async function getHookByToken(token: string): Promise<Hook | null> {
@@ -329,7 +400,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       ExpressionAttributeValues: { ':pk': `TOKEN#${token}` },
       Limit: 1,
     });
-    return items.length ? readDoc<Hook>(items[0]) : null;
+    return items.length ? readHook(items[0]) : null;
   }
 
   async function putHook(hook: Hook): Promise<void> {
@@ -417,7 +488,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       return { event: filterEventData(event, resolveData) };
     }
 
-    throw new WorkflowAPIError(
+    throw new WorkflowWorldError(
       `Event '${data.eventType}' is not supported for legacy runs`,
       { status: 409 }
     );
@@ -446,7 +517,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         });
 
         let runs = items
-          .map((item) => readDoc<WorkflowRun>(item))
+          .map((item) => readRun(item))
           .filter((r): r is WorkflowRun => r !== null);
 
         if (params?.workflowName) {
@@ -486,7 +557,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           ? await getStepById(runId, stepId)
           : await getStepByStepId(stepId);
         if (!step) {
-          throw new WorkflowAPIError(`Step not found: ${stepId}`, { status: 404 });
+          throw new WorkflowWorldError(`Step not found: ${stepId}`, { status: 404 });
         }
         return filterStepData(step, params?.resolveData);
       },
@@ -504,7 +575,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         });
 
         const steps = items
-          .map((item) => readDoc<Step>(item))
+          .map((item) => readStep(item))
           .filter((s): s is Step => s !== null);
 
         const page = paginate(
@@ -543,7 +614,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           effectiveRunId = runId ?? `wrun_${generateUlid()}`;
         } else {
           if (!runId) {
-            throw new WorkflowAPIError(
+            throw new WorkflowWorldError(
               'runId is required for non run_created events',
               { status: 400 }
             );
@@ -592,7 +663,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
             }
 
             if (runTerminalEvents.has(data.eventType)) {
-              throw new WorkflowAPIError(
+              throw new WorkflowWorldError(
                 `Cannot transition run from terminal state '${currentRun.status}'`,
                 { status: 409 }
               );
@@ -602,7 +673,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
               data.eventType === 'step_created' ||
               data.eventType === 'hook_created'
             ) {
-              throw new WorkflowAPIError(
+              throw new WorkflowWorldError(
                 `Cannot create entities on terminal run '${currentRun.status}'`,
                 { status: 409 }
               );
@@ -611,7 +682,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         }
 
         if (!currentRun && data.eventType !== 'run_created') {
-          throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, {
+          throw new WorkflowWorldError(`Run not found: ${effectiveRunId}`, {
             status: 404,
           });
         }
@@ -626,20 +697,20 @@ export function createStorage(config: DynamoStorageConfig): Storage {
 
         if (stepEvents.has(data.eventType)) {
           if (!data.correlationId) {
-            throw new WorkflowAPIError('Step events require correlationId', {
+            throw new WorkflowWorldError('Step events require correlationId', {
               status: 400,
             });
           }
 
           validatedStep = await getStepById(effectiveRunId, data.correlationId);
           if (!validatedStep) {
-            throw new WorkflowAPIError(`Step '${data.correlationId}' not found`, {
+            throw new WorkflowWorldError(`Step '${data.correlationId}' not found`, {
               status: 404,
             });
           }
 
           if (isTerminalStepStatus(validatedStep.status)) {
-            throw new WorkflowAPIError(
+            throw new WorkflowWorldError(
               `Cannot modify step in terminal state '${validatedStep.status}'`,
               { status: 409 }
             );
@@ -650,7 +721,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
             isTerminalRunStatus(currentRun.status) &&
             validatedStep.status !== 'running'
           ) {
-            throw new WorkflowAPIError(
+            throw new WorkflowWorldError(
               `Cannot modify non-running step on terminal run '${currentRun.status}'`,
               { status: 410 }
             );
@@ -664,7 +735,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         ) {
           const existingHook = await getHookById(data.correlationId);
           if (!existingHook) {
-            throw new WorkflowAPIError(`Hook '${data.correlationId}' not found`, {
+            throw new WorkflowWorldError(`Hook '${data.correlationId}' not found`, {
               status: 404,
             });
           }
@@ -694,7 +765,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           await putRun(run);
         } else if (data.eventType === 'run_started') {
           if (!currentRun) {
-            throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, {
+            throw new WorkflowWorldError(`Run not found: ${effectiveRunId}`, {
               status: 404,
             });
           }
@@ -711,7 +782,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           await putRun(run);
         } else if (data.eventType === 'run_completed') {
           if (!currentRun) {
-            throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, {
+            throw new WorkflowWorldError(`Run not found: ${effectiveRunId}`, {
               status: 404,
             });
           }
@@ -727,7 +798,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           await deleteAllHooksForRun(run.runId);
         } else if (data.eventType === 'run_failed') {
           if (!currentRun) {
-            throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, {
+            throw new WorkflowWorldError(`Run not found: ${effectiveRunId}`, {
               status: 404,
             });
           }
@@ -750,7 +821,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           await deleteAllHooksForRun(run.runId);
         } else if (data.eventType === 'run_cancelled') {
           if (!currentRun) {
-            throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, {
+            throw new WorkflowWorldError(`Run not found: ${effectiveRunId}`, {
               status: 404,
             });
           }
@@ -766,7 +837,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           await deleteAllHooksForRun(run.runId);
         } else if (data.eventType === 'step_created') {
           if (!data.correlationId) {
-            throw new WorkflowAPIError('Step events require correlationId', {
+            throw new WorkflowWorldError('Step events require correlationId', {
               status: 400,
             });
           }
@@ -797,7 +868,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
             );
           } catch (err) {
             if (isConditionalCheckFailed(err)) {
-              throw new WorkflowAPIError(
+              throw new WorkflowWorldError(
                 `Step '${data.correlationId}' already exists`,
                 { status: 409 }
               );
@@ -806,7 +877,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           }
         } else if (data.eventType === 'step_started') {
           if (!validatedStep || !data.correlationId) {
-            throw new WorkflowAPIError('Step not found for step_started', {
+            throw new WorkflowWorldError('Step not found for step_started', {
               status: 404,
             });
           }
@@ -815,11 +886,11 @@ export function createStorage(config: DynamoStorageConfig): Storage {
             validatedStep.retryAfter &&
             validatedStep.retryAfter.getTime() > Date.now()
           ) {
-            const err = new WorkflowAPIError(
+            const err = new WorkflowWorldError(
               `Cannot start step '${data.correlationId}' before retryAfter`,
               { status: 425 }
             );
-            (err as WorkflowAPIError & { meta?: Record<string, string> }).meta = {
+            (err as WorkflowWorldError & { meta?: Record<string, string> }).meta = {
               stepId: data.correlationId,
               retryAfter: validatedStep.retryAfter.toISOString(),
             };
@@ -837,7 +908,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           await putStep(step);
         } else if (data.eventType === 'step_completed') {
           if (!validatedStep) {
-            throw new WorkflowAPIError('Step not found for step_completed', {
+            throw new WorkflowWorldError('Step not found for step_completed', {
               status: 404,
             });
           }
@@ -851,7 +922,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           await putStep(step);
         } else if (data.eventType === 'step_failed') {
           if (!validatedStep) {
-            throw new WorkflowAPIError('Step not found for step_failed', {
+            throw new WorkflowWorldError('Step not found for step_failed', {
               status: 404,
             });
           }
@@ -871,7 +942,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           await putStep(step);
         } else if (data.eventType === 'step_retrying') {
           if (!validatedStep) {
-            throw new WorkflowAPIError('Step not found for step_retrying', {
+            throw new WorkflowWorldError('Step not found for step_retrying', {
               status: 404,
             });
           }
@@ -912,7 +983,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
 
           const existingById = await getHookById(data.correlationId);
           if (existingById) {
-            throw new WorkflowAPIError(
+            throw new WorkflowWorldError(
               `Hook '${data.correlationId}' already exists`,
               { status: 409 }
             );
@@ -966,6 +1037,13 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           specVersion: effectiveSpecVersion,
         } as Event;
 
+        // run_started's eventData (used only transiently for the resilient-start
+        // bootstrap path) is never persisted or returned — the durable copy lives
+        // on run_created only, matching @workflow/world-postgres.
+        if (event.eventType === 'run_started') {
+          delete (event as Event & { eventData?: unknown }).eventData;
+        }
+
         await putEvent(event);
 
         return {
@@ -974,6 +1052,22 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           step: step ? deepClone(step) : undefined,
           hook: hook ? deepClone(hook) : undefined,
         };
+      },
+
+      async get(runId: string, eventId: string, params?: GetEventParams) {
+        const res = await ddb.send(
+          new GetCommand({
+            TableName: tableName,
+            Key: { PK: runPK(runId), SK: eventSK(eventId) },
+          })
+        );
+        const event = readEvent(res.Item);
+        if (!event) {
+          throw new WorkflowWorldError(`Event not found: ${eventId}`, {
+            status: 404,
+          });
+        }
+        return filterEventData(event, params?.resolveData);
       },
 
       async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
@@ -990,7 +1084,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         });
 
         const events = items
-          .map((item) => readDoc<Event>(item))
+          .map((item) => readEvent(item))
           .filter((e): e is Event => e !== null);
 
         const page = paginate(
@@ -1024,7 +1118,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         });
 
         const events = items
-          .map((item) => readDoc<Event>(item))
+          .map((item) => readEvent(item))
           .filter((e): e is Event => e !== null);
 
         const page = paginate(
@@ -1051,7 +1145,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       async get(hookId: string, params?: GetHookParams) {
         const hook = await getHookById(hookId);
         if (!hook) {
-          throw new WorkflowAPIError(`Hook not found: ${hookId}`, { status: 404 });
+          throw new WorkflowWorldError(`Hook not found: ${hookId}`, { status: 404 });
         }
         return filterHookData(hook, params?.resolveData);
       },
@@ -1059,7 +1153,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       async getByToken(token: string, params?: GetHookParams) {
         const hook = await getHookByToken(token);
         if (!hook) {
-          throw new WorkflowAPIError(`Hook not found for token: ${token}`, {
+          throw new WorkflowWorldError(`Hook not found for token: ${token}`, {
             status: 404,
           });
         }
@@ -1098,7 +1192,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         }
 
         const hooks = items
-          .map((item) => readDoc<Hook>(item))
+          .map((item) => readHook(item))
           .filter((h): h is Hook => h !== null);
 
         const page = paginate(

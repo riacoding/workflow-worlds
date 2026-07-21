@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/aws-infra",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "AWS CDK infrastructure for @workflow-worlds/aws (DynamoDB table, SQS queue, EventBridge Scheduler group + role)",
   "private": true,
   "type": "module",
@@ -17,7 +17,8 @@
     "deploy:dev": "cdk deploy --outputs-file cdk-outputs.json -c projectName=myapp -c stage=dev",
     "destroy": "cdk destroy",
     "destroy:dev": "cdk destroy -c projectName=myapp -c stage=dev",
-    "print-env": "node dist/scripts/print-env.js"
+    "print-env": "node dist/scripts/print-env.js",
+    "recreate-table": "bash scripts/recreate-table.sh"
   },
   "dependencies": {
     "aws-cdk-lib": "^2.170.0",

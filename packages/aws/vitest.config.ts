@@ -8,10 +8,6 @@ export default defineConfig({
     setupFiles: ['test/setup.ts'],
     // Run sequentially in one fork so a single LocalStack container is shared.
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        singleFork: true,
-      },
-    },
+    fileParallelism: false,
   },
 });

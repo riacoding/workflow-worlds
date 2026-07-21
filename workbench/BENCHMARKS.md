@@ -9,6 +9,7 @@ This document explains how to run benchmarks locally and the relationship with t
 pnpm bench:starter   # In-memory starter world
 pnpm bench:redis     # Redis world (requires Redis running)
 pnpm bench:mongodb   # MongoDB world (requires MongoDB running)
+pnpm bench:aws       # AWS world (requires WORKFLOW_AWS_LOCAL=true or a reachable AWS/LocalStack endpoint)
 ```
 
 ## Available Benchmarks
@@ -38,6 +39,9 @@ pnpm bench:redis
 # MongoDB - requires MongoDB server
 docker run -d -p 27017:27017 mongo:latest
 pnpm bench:mongodb
+
+# AWS - requires DynamoDB/SQS (LocalStack or real AWS)
+WORKFLOW_AWS_LOCAL=true pnpm bench:aws
 ```
 
 ### Environment Variables
@@ -47,6 +51,8 @@ pnpm bench:mongodb
 | `WORKFLOW_TARGET_WORLD` | Package name of world to test | Required |
 | `WORKFLOW_REDIS_URI` | Redis connection string | `redis://localhost:6379` |
 | `WORKFLOW_MONGODB_URI` | MongoDB connection string | `mongodb://localhost:27017` |
+| `WORKFLOW_AWS_LOCAL` | Auto-start LocalStack for the AWS world | `false` |
+| `WORKFLOW_AWS_ENDPOINT` | Existing AWS/LocalStack endpoint (alternative to `WORKFLOW_AWS_LOCAL`) | Real AWS |
 | `DEPLOYMENT_URL` | URL of running workbench server | Set by bench script |
 | `WORLD_NAME` | Name for output files | Derived from target world |
 
@@ -149,6 +155,7 @@ Both repos use the same world configuration for consistency:
 | starter | 💾 | No | Yes |
 | mongodb | 🍃 | No | Yes |
 | redis | 🔴 | No | Yes |
+| aws | ☁️ | No | Yes |
 
 ## Debugging
 

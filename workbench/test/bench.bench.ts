@@ -1,74 +1,68 @@
-import { bench, describe } from 'vitest';
-import fs from 'fs';
-import path from 'path';
+import { bench, describe } from 'vitest'
+import fs from 'fs'
+import path from 'path'
 
-const deploymentUrl = process.env.DEPLOYMENT_URL;
+const deploymentUrl = process.env.DEPLOYMENT_URL
 if (!deploymentUrl) {
-  throw new Error('`DEPLOYMENT_URL` environment variable is not set');
+  throw new Error('`DEPLOYMENT_URL` environment variable is not set')
 }
 
 // Store workflow execution times for each benchmark
 const workflowTimings: Record<
   string,
   {
-    createdAt: string;
-    startedAt?: string;
-    completedAt?: string;
-    executionTimeMs?: number;
-    firstByteTimeMs?: number;
+    createdAt: string
+    startedAt?: string
+    completedAt?: string
+    startDelayMs?: number
+    runTimeAfterStartMs?: number
+    executionTimeMs?: number
+    firstByteTimeMs?: number
   }[]
-> = {};
+> = {}
 
 // Buffered timing data keyed by task name, flushed in teardown
-const bufferedTimings: Map<
-  string,
-  { run: any; extra?: { firstByteTimeMs?: number } }[]
-> = new Map();
+const bufferedTimings: Map<string, { run: any; extra?: { firstByteTimeMs?: number } }[]> = new Map()
 
 async function triggerWorkflow(
   workflow: string | { workflowFile: string; workflowFn: string },
-  args: unknown[]
+  args: unknown[],
 ): Promise<{ runId: string }> {
-  const url = new URL('/api/trigger', deploymentUrl);
-  const workflowFn =
-    typeof workflow === 'string' ? workflow : workflow.workflowFn;
-  const workflowFile =
-    typeof workflow === 'string'
-      ? 'workflows/bench.ts'
-      : workflow.workflowFile;
+  const url = new URL('/api/trigger', deploymentUrl)
+  const workflowFn = typeof workflow === 'string' ? workflow : workflow.workflowFn
+  const workflowFile = typeof workflow === 'string' ? 'workflows/bench.ts' : workflow.workflowFile
 
-  url.searchParams.set('workflowFile', workflowFile);
-  url.searchParams.set('workflowFn', workflowFn);
+  url.searchParams.set('workflowFile', workflowFile)
+  url.searchParams.set('workflowFn', workflowFn)
 
   const res = await fetch(url, {
     method: 'POST',
     body: JSON.stringify(args),
-  });
+  })
   if (!res.ok) {
-    throw new Error(
-      `Failed to trigger workflow: ${res.url} ${
-        res.status
-      }: ${await res.text()}`
-    );
+    throw new Error(`Failed to trigger workflow: ${res.url} ${res.status}: ${await res.text()}`)
   }
-  const run = await res.json();
-  return run;
+  const run = await res.json()
+  return run
 }
 
 async function getWorkflowReturnValue(
-  runId: string
-): Promise<{ run: { runId: string; createdAt: string | null; startedAt: string | null; completedAt: string | null }; value: unknown }> {
+  runId: string,
+): Promise<{
+  run: { runId: string; createdAt: string | null; startedAt: string | null; completedAt: string | null }
+  value: unknown
+}> {
   // We need to poll the GET endpoint until the workflow run is completed.
   while (true) {
-    const url = new URL('/api/trigger', deploymentUrl);
-    url.searchParams.set('runId', runId);
+    const url = new URL('/api/trigger', deploymentUrl)
+    url.searchParams.set('runId', runId)
 
-    const res = await fetch(url);
+    const res = await fetch(url)
 
     if (res.status === 202) {
       // Workflow run is still running, so we need to wait and poll again
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      continue;
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      continue
     }
 
     // Extract run metadata from headers
@@ -77,202 +71,226 @@ async function getWorkflowReturnValue(
       createdAt: res.headers.get('X-Workflow-Run-Created-At'),
       startedAt: res.headers.get('X-Workflow-Run-Started-At'),
       completedAt: res.headers.get('X-Workflow-Run-Completed-At'),
-    };
+    }
 
-    const contentType = res.headers.get('Content-Type');
+    const contentType = res.headers.get('Content-Type')
 
     if (contentType?.includes('application/json')) {
-      return { run, value: await res.json() };
+      return { run, value: await res.json() }
     }
 
     if (contentType?.includes('application/octet-stream')) {
-      return { run, value: res.body };
+      return { run, value: res.body }
     }
 
-    throw new Error(`Unexpected content type: ${contentType}`);
+    throw new Error(`Unexpected content type: ${contentType}`)
   }
 }
 
 function getTimingOutputPath() {
-  const worldName = process.env.WORLD_NAME || 'unknown';
-  return path.resolve(
-    process.cwd(),
-    `bench-timings-${worldName}.json`
-  );
+  const worldName = process.env.WORLD_NAME || 'unknown'
+  return path.resolve(process.cwd(), `bench-timings-${worldName}.json`)
 }
 
 function writeTimingFile() {
-  const outputPath = getTimingOutputPath();
+  const outputPath = getTimingOutputPath()
 
   // Calculate average, min, and max execution times
   const summary: Record<
     string,
     {
-      avgExecutionTimeMs: number;
-      minExecutionTimeMs: number;
-      maxExecutionTimeMs: number;
-      samples: number;
-      avgFirstByteTimeMs?: number;
-      minFirstByteTimeMs?: number;
-      maxFirstByteTimeMs?: number;
+      avgStartDelayMs?: number
+      minStartDelayMs?: number
+      maxStartDelayMs?: number
+      avgRunTimeAfterStartMs?: number
+      minRunTimeAfterStartMs?: number
+      maxRunTimeAfterStartMs?: number
+      avgExecutionTimeMs: number
+      minExecutionTimeMs: number
+      maxExecutionTimeMs: number
+      samples: number
+      avgFirstByteTimeMs?: number
+      minFirstByteTimeMs?: number
+      maxFirstByteTimeMs?: number
     }
-  > = {};
+  > = {}
   for (const [benchName, timings] of Object.entries(workflowTimings)) {
-    const validTimings = timings.filter((t) => t.executionTimeMs !== undefined);
+    const validTimings = timings.filter((t) => t.executionTimeMs !== undefined)
     if (validTimings.length > 0) {
-      const executionTimes = validTimings.map((t) => t.executionTimeMs!);
-      const avg =
-        executionTimes.reduce((sum, t) => sum + t, 0) / executionTimes.length;
-      const min = Math.min(...executionTimes);
-      const max = Math.max(...executionTimes);
+      const executionTimes = validTimings.map((t) => t.executionTimeMs!)
+      const avg = executionTimes.reduce((sum, t) => sum + t, 0) / executionTimes.length
+      const min = Math.min(...executionTimes)
+      const max = Math.max(...executionTimes)
       summary[benchName] = {
         avgExecutionTimeMs: avg,
         minExecutionTimeMs: min,
         maxExecutionTimeMs: max,
         samples: validTimings.length,
-      };
+      }
+
+      const startDelayTimings = timings.filter((t) => t.startDelayMs !== undefined)
+      if (startDelayTimings.length > 0) {
+        const startDelays = startDelayTimings.map((t) => t.startDelayMs!)
+        summary[benchName].avgStartDelayMs = startDelays.reduce((sum, t) => sum + t, 0) / startDelays.length
+        summary[benchName].minStartDelayMs = Math.min(...startDelays)
+        summary[benchName].maxStartDelayMs = Math.max(...startDelays)
+      }
+
+      const runTimeAfterStartTimings = timings.filter((t) => t.runTimeAfterStartMs !== undefined)
+      if (runTimeAfterStartTimings.length > 0) {
+        const runTimesAfterStart = runTimeAfterStartTimings.map((t) => t.runTimeAfterStartMs!)
+        summary[benchName].avgRunTimeAfterStartMs =
+          runTimesAfterStart.reduce((sum, t) => sum + t, 0) / runTimesAfterStart.length
+        summary[benchName].minRunTimeAfterStartMs = Math.min(...runTimesAfterStart)
+        summary[benchName].maxRunTimeAfterStartMs = Math.max(...runTimesAfterStart)
+      }
 
       // Add first byte stats if available
-      const firstByteTimings = timings.filter(
-        (t) => t.firstByteTimeMs !== undefined
-      );
+      const firstByteTimings = timings.filter((t) => t.firstByteTimeMs !== undefined)
       if (firstByteTimings.length > 0) {
-        const firstByteTimes = firstByteTimings.map((t) => t.firstByteTimeMs!);
-        summary[benchName].avgFirstByteTimeMs =
-          firstByteTimes.reduce((sum, t) => sum + t, 0) / firstByteTimes.length;
-        summary[benchName].minFirstByteTimeMs = Math.min(...firstByteTimes);
-        summary[benchName].maxFirstByteTimeMs = Math.max(...firstByteTimes);
+        const firstByteTimes = firstByteTimings.map((t) => t.firstByteTimeMs!)
+        summary[benchName].avgFirstByteTimeMs = firstByteTimes.reduce((sum, t) => sum + t, 0) / firstByteTimes.length
+        summary[benchName].minFirstByteTimeMs = Math.min(...firstByteTimes)
+        summary[benchName].maxFirstByteTimeMs = Math.max(...firstByteTimes)
       }
     }
   }
 
-  fs.writeFileSync(
-    outputPath,
-    JSON.stringify({ timings: workflowTimings, summary }, null, 2)
-  );
+  fs.writeFileSync(outputPath, JSON.stringify({ timings: workflowTimings, summary }, null, 2))
 }
 
 // Buffer timing data (called during each iteration)
-function stageTiming(
-  benchName: string,
-  run: any,
-  extra?: { firstByteTimeMs?: number }
-) {
+function stageTiming(benchName: string, run: any, extra?: { firstByteTimeMs?: number }) {
   if (!bufferedTimings.has(benchName)) {
-    bufferedTimings.set(benchName, []);
+    bufferedTimings.set(benchName, [])
   }
-  bufferedTimings.get(benchName)!.push({ run, extra });
+  bufferedTimings.get(benchName)!.push({ run, extra })
 }
 
 // Teardown: on warmup, clear buffer; on run, flush to file then clear
 const teardown = (task: { name: string }, mode: 'warmup' | 'run') => {
-  const buffered = bufferedTimings.get(task.name) || [];
+  const buffered = bufferedTimings.get(task.name) || []
 
   if (mode === 'run') {
     // Flush all buffered timings to workflowTimings
     for (const { run, extra } of buffered) {
       if (!workflowTimings[task.name]) {
-        workflowTimings[task.name] = [];
+        workflowTimings[task.name] = []
       }
 
       const timing: {
-        createdAt: string;
-        startedAt?: string;
-        completedAt?: string;
-        executionTimeMs?: number;
-        firstByteTimeMs?: number;
+        createdAt: string
+        startedAt?: string
+        completedAt?: string
+        startDelayMs?: number
+        runTimeAfterStartMs?: number
+        executionTimeMs?: number
+        firstByteTimeMs?: number
       } = {
         createdAt: run.createdAt || '',
         startedAt: run.startedAt || undefined,
         completedAt: run.completedAt || undefined,
-      };
+      }
 
       // Calculate execution time if timestamps are available (completedAt - createdAt)
       if (run.createdAt && run.completedAt) {
-        const created = new Date(run.createdAt).getTime();
-        const completed = new Date(run.completedAt).getTime();
-        timing.executionTimeMs = completed - created;
+        const created = new Date(run.createdAt).getTime()
+        const completed = new Date(run.completedAt).getTime()
+        timing.executionTimeMs = completed - created
+      }
+
+      // Calculate queue/start delay and active runtime window when available.
+      if (run.createdAt && run.startedAt) {
+        const created = new Date(run.createdAt).getTime()
+        const started = new Date(run.startedAt).getTime()
+        timing.startDelayMs = started - created
+      }
+
+      if (run.startedAt && run.completedAt) {
+        const started = new Date(run.startedAt).getTime()
+        const completed = new Date(run.completedAt).getTime()
+        timing.runTimeAfterStartMs = completed - started
       }
 
       // Add extra metrics if provided
       if (extra?.firstByteTimeMs !== undefined) {
-        timing.firstByteTimeMs = extra.firstByteTimeMs;
+        timing.firstByteTimeMs = extra.firstByteTimeMs
       }
 
-      workflowTimings[task.name].push(timing);
+      workflowTimings[task.name].push(timing)
     }
 
     // Write timing file after flushing
-    writeTimingFile();
+    writeTimingFile()
   }
 
   // Clear buffer (both warmup and run)
-  bufferedTimings.delete(task.name);
-};
+  bufferedTimings.delete(task.name)
+}
 
 describe('Workflow Performance Benchmarks', () => {
   bench(
     'workflow with no steps',
     async () => {
-      const { runId } = await triggerWorkflow('noStepsWorkflow', [42]);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with no steps', run);
+      const { runId } = await triggerWorkflow('noStepsWorkflow', [42])
+      const { run } = await getWorkflowReturnValue(runId)
+      stageTiming('workflow with no steps', run)
     },
-    { time: 5000, warmupIterations: 1, teardown }
-  );
+    { time: 5000, warmupIterations: 1, teardown },
+  )
 
   bench(
     'workflow with 1 step',
     async () => {
-      const { runId } = await triggerWorkflow('oneStepWorkflow', [100]);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with 1 step', run);
+      const { runId } = await triggerWorkflow('oneStepWorkflow', [100])
+      const { run } = await getWorkflowReturnValue(runId)
+      stageTiming('workflow with 1 step', run)
     },
-    { time: 5000, warmupIterations: 1, teardown }
-  );
+    { time: 5000, warmupIterations: 1, teardown },
+  )
 
   bench(
     'workflow with 10 sequential steps',
     async () => {
-      const { runId } = await triggerWorkflow('tenSequentialStepsWorkflow', []);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with 10 sequential steps', run);
+      const { runId } = await triggerWorkflow('tenSequentialStepsWorkflow', [])
+      const { run } = await getWorkflowReturnValue(runId)
+      stageTiming('workflow with 10 sequential steps', run)
     },
-    { time: 5000, iterations: 5, warmupIterations: 1, teardown }
-  );
+    { time: 5000, iterations: 5, warmupIterations: 1, teardown },
+  )
 
   bench(
     'workflow with 10 parallel steps',
     async () => {
-      const { runId } = await triggerWorkflow('tenParallelStepsWorkflow', []);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with 10 parallel steps', run);
+      const { runId } = await triggerWorkflow('tenParallelStepsWorkflow', [])
+      const { run } = await getWorkflowReturnValue(runId)
+      stageTiming('workflow with 10 parallel steps', run)
     },
-    { time: 5000, iterations: 5, warmupIterations: 1, teardown }
-  );
+    { time: 5000, iterations: 5, warmupIterations: 1, teardown },
+  )
 
   bench(
     'workflow with stream',
     async () => {
-      const { runId } = await triggerWorkflow('streamWorkflow', []);
-      const { run, value } = await getWorkflowReturnValue(runId);
+      const { runId } = await triggerWorkflow('streamWorkflow', [])
+      const { run, value } = await getWorkflowReturnValue(runId)
       // Consume the entire stream and track time-to-first-byte from workflow startedAt
-      let firstByteTimeMs: number | undefined;
+      let firstByteTimeMs: number | undefined
       if (value instanceof ReadableStream) {
-        const reader = value.getReader();
-        let isFirstChunk = true;
+        const reader = value.getReader()
+        let isFirstChunk = true
         while (true) {
-          const { done } = await reader.read();
+          const { done } = await reader.read()
           if (isFirstChunk && !done && run.startedAt) {
-            const startedAt = new Date(run.startedAt).getTime();
-            firstByteTimeMs = Date.now() - startedAt;
-            isFirstChunk = false;
+            const startedAt = new Date(run.startedAt).getTime()
+            firstByteTimeMs = Date.now() - startedAt
+            isFirstChunk = false
           }
-          if (done) break;
+          if (done) break
         }
       }
-      stageTiming('workflow with stream', run, { firstByteTimeMs });
+      stageTiming('workflow with stream', run, { firstByteTimeMs })
     },
-    { time: 5000, warmupIterations: 1, teardown }
-  );
-});
+    { time: 5000, warmupIterations: 1, teardown },
+  )
+})

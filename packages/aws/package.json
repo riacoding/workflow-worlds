@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/aws",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "AWS World implementation for Workflow DevKit (DynamoDB, SQS, EventBridge Scheduler, AppSync Events)",
   "author": "Riacoding",
   "license": "MIT",
@@ -26,7 +26,8 @@
     "dev": "tsc --watch",
     "test": "pnpm --filter @workflow-worlds/testing build && pnpm build && vitest run",
     "test:only": "pnpm --filter @workflow-worlds/testing build && vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pack": "pnpm build && pnpm pack --pack-destination /tmp/workflow-aws-tarballs"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.700.0",
@@ -35,17 +36,18 @@
     "@aws-sdk/lib-dynamodb": "^3.700.0",
     "@testcontainers/localstack": "^10.0.0",
     "@vercel/queue": "^0.0.0-alpha.29",
-    "@workflow/errors": "4.1.0-beta.14",
-    "@workflow/world": "4.1.0-beta.2",
-    "ulid": "^2.3.0",
+    "@workflow/errors": "4.1.4",
+    "@workflow/world": "4.2.1",
+    "cbor-x": "^1.6.0",
+    "ulid": "^3.0.1",
     "zod": "^4.1.11"
   },
   "devDependencies": {
     "@types/node": "^22.19.1",
     "@workflow-worlds/testing": "workspace:*",
-    "@workflow/world-testing": "4.1.0-beta.54",
+    "@workflow/world-testing": "4.1.11",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.0.18"
   },
   "files": [
     "dist"

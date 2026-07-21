@@ -12,3 +12,4 @@ bench-timings-*.json
 
 # Dependencies
 node_modules/
+/.swc

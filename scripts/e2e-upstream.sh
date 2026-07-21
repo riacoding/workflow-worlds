@@ -53,24 +53,32 @@ WORLD_PACKAGE[starter]="@workflow-worlds/starter"
 WORLD_PACKAGE[turso]="@workflow-worlds/turso"
 WORLD_PACKAGE[mongodb]="@workflow-worlds/mongodb"
 WORLD_PACKAGE[redis]="@workflow-worlds/redis"
+WORLD_PACKAGE[aws]="@workflow-worlds/aws"
 
 declare -A WORLD_LOCAL_DIR
 WORLD_LOCAL_DIR[starter]="$ROOT_DIR/packages/starter"
 WORLD_LOCAL_DIR[turso]="$ROOT_DIR/packages/turso"
 WORLD_LOCAL_DIR[mongodb]="$ROOT_DIR/packages/mongodb"
 WORLD_LOCAL_DIR[redis]="$ROOT_DIR/packages/redis"
+WORLD_LOCAL_DIR[aws]="$ROOT_DIR/packages/aws"
 
 declare -A WORLD_SERVICE
 WORLD_SERVICE[starter]="none"
 WORLD_SERVICE[turso]="none"
 WORLD_SERVICE[mongodb]="mongodb"
 WORLD_SERVICE[redis]="redis"
+# aws is "none" here (unlike mongodb/redis) because the world itself
+# auto-starts LocalStack via testcontainers when WORKFLOW_AWS_LOCAL=true is
+# set (see packages/aws/src/local.ts) — no docker run/stop orchestration is
+# needed in this script. Docker must still be installed and running.
+WORLD_SERVICE[aws]="none"
 
 declare -A WORLD_SETUP
 WORLD_SETUP[starter]=""
 WORLD_SETUP[turso]="pnpm exec workflow-turso-setup"
 WORLD_SETUP[mongodb]=""
 WORLD_SETUP[redis]=""
+WORLD_SETUP[aws]=""
 
 # Environment variables per world (newline-separated KEY=VALUE pairs)
 declare -A WORLD_ENV
@@ -82,6 +90,8 @@ WORKFLOW_MONGODB_URI=mongodb://localhost:27017
 WORKFLOW_MONGODB_DATABASE_NAME=workflow"
 WORLD_ENV[redis]="WORKFLOW_TARGET_WORLD=@workflow-worlds/redis
 WORKFLOW_REDIS_URI=redis://localhost:6379"
+WORLD_ENV[aws]="WORKFLOW_TARGET_WORLD=@workflow-worlds/aws
+WORKFLOW_AWS_LOCAL=true"
 
 # --- Functions --------------------------------------------------------------
 
@@ -93,6 +103,7 @@ usage() {
   echo "  turso      Turso/libSQL world (file-based, no services)"
   echo "  mongodb    MongoDB world (requires Docker)"
   echo "  redis      Redis world (requires Docker)"
+  echo "  aws        AWS DynamoDB/SQS world (requires Docker; auto-starts LocalStack)"
   echo ""
   echo -e "${BOLD}Options:${NC}"
   echo "  --clean       Remove and re-clone the upstream repo"

@@ -1,0 +1,26 @@
+his is my world-aws project to create a world for vercel workflow api. 
+I want to adapt it to use the latest stable releases.
+I want you to do a deep dive through the current release code base and compare to 
+my current old beta code base. I want to generate a report that details the 
+breaking changes and the proposed fixes such that the new update aws code base will
+pass the tests in the @workflow/world-testing@4.1.11. This reports should be able to be read by
+Claude or other LLM and be able to implements the code base changes.
+
+This should not materially change the underlying infrastructure for the 
+aws/infra. But is schema changes are necessary note those under a schema changes section
+These would be implemented separately to the cdk project
+
+
+
+Current package versions
+
+"@workflow/errors": "4.1.0-beta.14",
+"@workflow/world": "4.1.0-beta.2",
+"@workflow/world-testing": "4.1.0-beta.54",
+
+Current Stable Releases
+
+ @workflow/world@4.2.1 
+ @workflow/errors@4.1.4 
+ @workflow/world-testing@4.1.11 
+ vitest@^4.0.18

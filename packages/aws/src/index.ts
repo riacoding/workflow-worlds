@@ -11,8 +11,8 @@
  * to it) so the runtime can import and invoke it via WORKFLOW_TARGET_WORLD.
  */
 
-import type { World } from '@workflow/world';
-import { GetQueueAttributesCommand } from '@aws-sdk/client-sqs';
+import { SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT, type World } from '@workflow/world'
+import { GetQueueAttributesCommand } from '@aws-sdk/client-sqs'
 import {
   createAwsClients,
   ensureQueue,
@@ -21,33 +21,33 @@ import {
   resolveAwsConfig,
   type AwsClients,
   type AwsConfig,
-} from './aws.js';
-import { createStorage } from './storage.js';
-import { createQueue } from './queue.js';
-import { createStreamer } from './streamer.js';
-import { startLocalStack } from './local.js';
-import { debug } from './utils.js';
+} from './aws.js'
+import { createStorage } from './storage.js'
+import { createQueue } from './queue.js'
+import { createStreamer } from './streamer.js'
+import { startLocalStack } from './local.js'
+import { debug } from './utils.js'
 
 export interface AwsWorldConfig extends AwsConfig {
   /** Base URL for HTTP callbacks. Env: WORKFLOW_SERVICE_URL. */
-  baseUrl?: string;
+  baseUrl?: string
   /** Max concurrent message processing. Env: WORKFLOW_CONCURRENCY. */
-  concurrency?: number;
+  concurrency?: number
 }
 
 interface Initialized {
-  clients: AwsClients;
+  clients: AwsClients
   // Typed as `any` so the delegating World wrappers below don't have to
   // re-satisfy every resolveData overload of the Storage/Queue/Streamer methods.
-  storage: any;
-  queue: any;
-  startQueue: () => Promise<void>;
-  closeQueue: () => Promise<void>;
-  streamer: any;
+  storage: any
+  queue: any
+  startQueue: () => Promise<void>
+  closeQueue: () => Promise<void>
+  streamer: any
 }
 
 export function createWorld(config: AwsWorldConfig = {}): World {
-  const resolved = resolveAwsConfig(config);
+  const resolved = resolveAwsConfig(config)
 
   debug('Creating AWS world:', {
     region: resolved.region,
@@ -56,52 +56,52 @@ export function createWorld(config: AwsWorldConfig = {}): World {
     queueName: resolved.queueName,
     autoProvision: resolved.autoProvision,
     local: resolved.local,
-  });
+  })
 
-  let initPromise: Promise<Initialized> | null = null;
+  let initPromise: Promise<Initialized> | null = null
 
   function ensureInitialized(): Promise<Initialized> {
-    if (initPromise) return initPromise;
+    if (initPromise) return initPromise
 
     initPromise = (async () => {
       if (resolved.local) {
-        const { endpoint } = await startLocalStack();
-        resolved.endpoint = resolved.endpoint ?? endpoint;
-        resolved.credentials = resolved.credentials ?? { accessKeyId: 'test', secretAccessKey: 'test' };
+        const { endpoint } = await startLocalStack()
+        resolved.endpoint = resolved.endpoint ?? endpoint
+        resolved.credentials = resolved.credentials ?? { accessKeyId: 'test', secretAccessKey: 'test' }
       }
 
-      const clients = createAwsClients(resolved);
+      const clients = createAwsClients(resolved)
 
       if (resolved.autoProvision) {
-        await Promise.all([ensureTable(clients), ensureQueue(clients)]);
-        await ensureSchedulerGroup(clients);
+        await Promise.all([ensureTable(clients), ensureQueue(clients)])
+        await ensureSchedulerGroup(clients)
       } else if (!resolved.queueUrl) {
-        await ensureQueue(clients);
+        await ensureQueue(clients)
       }
 
-      const queueUrl = resolved.queueUrl!;
+      const queueUrl = resolved.queueUrl!
 
       // Resolve the queue ARN (needed only when EventBridge Scheduler is used
       // for long delays). Best-effort — never block startup on it.
-      let queueArn = resolved.queueArn;
+      let queueArn = resolved.queueArn
       if (!queueArn) {
         try {
           const attrs = await clients.sqs.send(
             new GetQueueAttributesCommand({
               QueueUrl: queueUrl,
               AttributeNames: ['QueueArn'],
-            })
-          );
-          queueArn = attrs.Attributes?.QueueArn;
+            }),
+          )
+          queueArn = attrs.Attributes?.QueueArn
         } catch (err) {
-          debug('Could not resolve queue ARN (non-fatal):', String(err));
+          debug('Could not resolve queue ARN (non-fatal):', String(err))
         }
       }
 
       const storage = createStorage({
         ddb: clients.ddb,
         tableName: resolved.tableName,
-      });
+      })
 
       const { queue, start, close } = createQueue({
         ddb: clients.ddb,
@@ -114,28 +114,29 @@ export function createWorld(config: AwsWorldConfig = {}): World {
         schedulerGroupName: resolved.schedulerGroupName,
         schedulerRoleArn: resolved.schedulerRoleArn,
         queueArn,
-      });
+      })
 
       const streamer = createStreamer({
         ddb: clients.ddb,
         tableName: resolved.tableName,
         appsyncEventsEndpoint: resolved.appsyncEventsEndpoint,
         appsyncApiKey: resolved.appsyncApiKey,
-      });
+      })
 
-      debug('AWS world initialization complete');
+      debug('AWS world initialization complete')
 
       return {
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
         clients,
         storage,
         queue,
         startQueue: start,
         closeQueue: close,
         streamer,
-      };
-    })();
+      }
+    })()
 
-    return initPromise;
+    return initPromise
   }
 
   return {
@@ -144,50 +145,54 @@ export function createWorld(config: AwsWorldConfig = {}): World {
     // =========================================================================
     runs: {
       async get(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.get(id, params);
+        const { storage } = await ensureInitialized()
+        return storage.runs.get(id, params)
       },
       async list(params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.list(params);
+        const { storage } = await ensureInitialized()
+        return storage.runs.list(params)
       },
     },
     steps: {
       async get(runId, stepId, params) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.get(runId, stepId, params);
+        const { storage } = await ensureInitialized()
+        return storage.steps.get(runId, stepId, params)
       },
       async list(params) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.list(params);
+        const { storage } = await ensureInitialized()
+        return storage.steps.list(params)
       },
     },
     events: {
       async create(runId, data, params) {
-        const { storage } = await ensureInitialized();
-        return storage.events.create(runId as never, data as never, params);
+        const { storage } = await ensureInitialized()
+        return storage.events.create(runId as never, data as never, params)
+      },
+      async get(runId, eventId, params) {
+        const { storage } = await ensureInitialized()
+        return storage.events.get(runId, eventId, params)
       },
       async list(params) {
-        const { storage } = await ensureInitialized();
-        return storage.events.list(params);
+        const { storage } = await ensureInitialized()
+        return storage.events.list(params)
       },
       async listByCorrelationId(params) {
-        const { storage } = await ensureInitialized();
-        return storage.events.listByCorrelationId(params);
+        const { storage } = await ensureInitialized()
+        return storage.events.listByCorrelationId(params)
       },
     },
     hooks: {
       async get(hookId, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.get(hookId, params);
+        const { storage } = await ensureInitialized()
+        return storage.hooks.get(hookId, params)
       },
       async getByToken(token, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.getByToken(token, params);
+        const { storage } = await ensureInitialized()
+        return storage.hooks.getByToken(token, params)
       },
       async list(params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.list(params);
+        const { storage } = await ensureInitialized()
+        return storage.hooks.list(params)
       },
     },
 
@@ -195,54 +200,62 @@ export function createWorld(config: AwsWorldConfig = {}): World {
     // QUEUE
     // =========================================================================
     async getDeploymentId() {
-      const { queue } = await ensureInitialized();
-      return queue.getDeploymentId();
+      const { queue } = await ensureInitialized()
+      return queue.getDeploymentId()
     },
     async queue(queueName, message, opts) {
-      const { queue } = await ensureInitialized();
-      return queue.queue(queueName, message, opts);
+      const { queue } = await ensureInitialized()
+      return queue.queue(queueName, message, opts)
     },
     createQueueHandler(prefix, handler) {
       return async (req: Request): Promise<Response> => {
-        const { queue } = await ensureInitialized();
-        return queue.createQueueHandler(prefix, handler)(req);
-      };
+        const { queue } = await ensureInitialized()
+        return queue.createQueueHandler(prefix, handler)(req)
+      }
     },
 
     // =========================================================================
     // STREAMER
     // =========================================================================
     async writeToStream(name, runId, chunk) {
-      const { streamer } = await ensureInitialized();
-      return streamer.writeToStream(name, runId, chunk);
+      const { streamer } = await ensureInitialized()
+      return streamer.writeToStream(name, runId, chunk)
     },
     async closeStream(name, runId) {
-      const { streamer } = await ensureInitialized();
-      return streamer.closeStream(name, runId);
+      const { streamer } = await ensureInitialized()
+      return streamer.closeStream(name, runId)
     },
     async readFromStream(name, startIndex) {
-      const { streamer } = await ensureInitialized();
-      return streamer.readFromStream(name, startIndex);
+      const { streamer } = await ensureInitialized()
+      return streamer.readFromStream(name, startIndex)
     },
     async listStreamsByRunId(runId) {
-      const { streamer } = await ensureInitialized();
-      return streamer.listStreamsByRunId(runId);
+      const { streamer } = await ensureInitialized()
+      return streamer.listStreamsByRunId(runId)
+    },
+    async getStreamChunks(name, runId, options) {
+      const { streamer } = await ensureInitialized()
+      return streamer.getStreamChunks(name, runId, options)
+    },
+    async getStreamInfo(name, runId) {
+      const { streamer } = await ensureInitialized()
+      return streamer.getStreamInfo(name, runId)
     },
 
     // =========================================================================
     // LIFECYCLE
     // =========================================================================
     async start(): Promise<void> {
-      const { startQueue } = await ensureInitialized();
-      await startQueue();
+      const { startQueue } = await ensureInitialized()
+      await startQueue()
     },
-  };
+  }
 }
 
 // Default export for WORKFLOW_TARGET_WORLD — the function itself, not a call.
-export default createWorld;
+export default createWorld
 
-export { type AwsConfig } from './aws.js';
-export { createStorage, type DynamoStorageConfig } from './storage.js';
-export { createQueue, type QueueConfig } from './queue.js';
-export { createStreamer, type DynamoStreamerConfig } from './streamer.js';
+export { type AwsConfig } from './aws.js'
+export { createStorage, type DynamoStorageConfig } from './storage.js'
+export { createQueue, type QueueConfig } from './queue.js'
+export { createStreamer, type DynamoStreamerConfig } from './streamer.js'

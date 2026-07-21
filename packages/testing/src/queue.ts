@@ -60,9 +60,9 @@ export function queueTests(options: QueueTestOptions) {
         });
 
         expect(result).toBeDefined();
-        expect(result.messageId).toBeDefined();
+        expect(result.messageId).not.toBeNull();
         expect(typeof result.messageId).toBe('string');
-        expect(result.messageId.startsWith('msg_')).toBe(true);
+        expect(result.messageId!.startsWith('msg_')).toBe(true);
       });
 
       test('deduplicates messages with same idempotency key', async () => {
