@@ -126,7 +126,6 @@ export function createWorld(config: AwsWorldConfig = {}): World {
       debug('AWS world initialization complete')
 
       return {
-        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
         clients,
         storage,
         queue,
@@ -140,6 +139,14 @@ export function createWorld(config: AwsWorldConfig = {}): World {
   }
 
   return {
+    // `start()` reads this synchronously (before ensureInitialized() has run)
+    // to decide the spec version new runs are created at — it must live on
+    // the object returned here, not on the internal `Initialized` result
+    // above. Without it, callers silently fall back to spec version 2 and
+    // never get CBOR queue transport (runInput never attached to queue
+    // messages), even though this world fully supports it.
+    specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+
     // =========================================================================
     // STORAGE
     // =========================================================================

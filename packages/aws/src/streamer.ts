@@ -329,7 +329,19 @@ export function createStreamer(config: DynamoStreamerConfig): Streamer {
           emitter.on(`close:${name}`, closeHandler);
 
           const existing = await loadChunks(name);
-          for (let i = startIndex; i < existing.length; i++) {
+          // Negative startIndex means "last N" (core passes it through
+          // unresolved — see createReconnectingFramedStream's comment on
+          // negative startIndex skipping its own resolution). Resolve it
+          // relative to the data-chunk count, matching getStreamInfo's
+          // tailIndex, which excludes the trailing eof marker: plain array
+          // indexing (existing[-1]) is `undefined` in JS, not "last
+          // element", so this must be resolved before the loop below.
+          const dataChunkCount = existing.filter((c) => !c.eof).length;
+          const resolvedStartIndex =
+            startIndex < 0
+              ? Math.max(0, dataChunkCount + startIndex)
+              : startIndex;
+          for (let i = resolvedStartIndex; i < existing.length; i++) {
             const chunk = existing[i];
             lastChunkId = chunk.chunkId;
             if (chunk.eof) {

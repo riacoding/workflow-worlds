@@ -11,7 +11,7 @@
  *   delays beyond SQS's limit, an EventBridge Scheduler one-off schedule.
  */
 
-import { JsonTransport } from '@vercel/queue'
+import { decode, encode } from 'cbor-x'
 import type { Queue, MessageId, ValidQueueName, QueuePrefix } from '@workflow/world'
 import { GetCommand, PutCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
 import {
@@ -87,7 +87,6 @@ export function createQueue(config: QueueConfig): {
   close: () => Promise<void>
 } {
   const { ddb, sqs, scheduler, tableName, queueUrl } = config
-  const transport = new JsonTransport()
   const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES
 
   const maxConcurrency =
@@ -203,6 +202,7 @@ export function createQueue(config: QueueConfig): {
   async function processMessage(envelope: QueueEnvelope, receiptHandle: string, attempt: number): Promise<void> {
     const pathname = envelope.queueName.startsWith('__wkf_step_') ? 'step' : 'flow'
     const body = Buffer.from(envelope.payload, 'base64')
+    debug('Worker decoded bytes:', body.length, 'first16:', Array.from(body.subarray(0, 16)))
 
     inflightHandles.set(envelope.messageId, receiptHandle)
     // Keep the message invisible while we actively work on it. If this worker
@@ -226,7 +226,7 @@ export function createQueue(config: QueueConfig): {
       const response = await fetch(`${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${pathname}`, {
         method: 'POST',
         headers: {
-          'content-type': 'application/json',
+          'content-type': 'application/cbor',
           'x-vqs-queue-name': envelope.queueName,
           'x-vqs-message-id': envelope.messageId,
           'x-vqs-message-attempt': String(attempt),
@@ -255,8 +255,9 @@ export function createQueue(config: QueueConfig): {
             await deferMessage(envelope, receiptHandle, timeoutSeconds)
             return
           }
-        } catch {
+        } catch (err) {
           // fall through to failure handling
+          debug('deferMessage failed, falling back to failure handling:', String(err))
         }
       }
 
@@ -417,7 +418,18 @@ export function createQueue(config: QueueConfig): {
         }
       }
 
-      const serialized = transport.serialize(message)
+      // CBOR (not JSON) so binary fields survive the trip — queueMessage's
+      // runInput.input is devalue-encoded Uint8Array, and JSON.stringify would
+      // silently mangle it into a plain {"0":1,"1":2,...} object. This world
+      // declares specVersion 3 (SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT),
+      // which is exactly the contract that requires this.
+      const serialized = encode(message)
+      debug(
+        'Sending bytes:',
+        serialized.length,
+        'first16:',
+        Array.from(serialized.slice(0, 16)),
+      )
       const envelope: QueueEnvelope = {
         queueName,
         messageId,
@@ -475,11 +487,21 @@ export function createQueue(config: QueueConfig): {
           return Response.json({ error: 'Unhandled queue' }, { status: 400 })
         }
 
-        const body = await new JsonTransport().deserialize(req.body)
+        const bodyBytes = new Uint8Array(await req.arrayBuffer())
+        debug(
+          'Received bytes:',
+          bodyBytes.length,
+          'first16:',
+          Array.from(bodyBytes.slice(0, 16)),
+        )
+        const body = decode(bodyBytes)
 
         try {
           const result = await handler(body, { attempt, queueName, messageId })
-          if (result?.timeoutSeconds) {
+          // `timeoutSeconds: 0` means "re-invoke immediately" (e.g. hook conflict
+          // reporting, hook.getConflict() continuations) and must still take the
+          // 503 branch — a truthy check would drop it, since 0 is falsy in JS.
+          if (result?.timeoutSeconds !== undefined) {
             return Response.json({ timeoutSeconds: result.timeoutSeconds }, { status: 503 })
           }
           return Response.json({ ok: true })

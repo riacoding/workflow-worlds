@@ -20,6 +20,8 @@
  */
 
 import {
+  EntityConflictError,
+  HookNotFoundError,
   RunNotSupportedError,
   WorkflowWorldError,
   WorkflowRunNotFoundError,
@@ -54,6 +56,7 @@ import {
   PutCommand,
   QueryCommand,
   ScanCommand,
+  TransactWriteCommand,
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
 import { monotonicFactory } from 'ulid';
@@ -66,7 +69,7 @@ const generateUlid = monotonicFactory();
 // Key helpers & item (de)serialization
 // =============================================================================
 
-type Entity = 'run' | 'step' | 'event' | 'hook';
+type Entity = 'run' | 'step' | 'event' | 'hook' | 'hook_token';
 
 interface StoredItem {
   PK: string;
@@ -98,6 +101,7 @@ const runSK = (runId: string) => `RUN#${runId}`;
 const stepSK = (stepId: string) => `STEP#${stepId}`;
 const eventSK = (eventId: string) => `EVENT#${eventId}`;
 const hookSK = (hookId: string) => `HOOK#${hookId}`;
+const tokenKey = (token: string) => `TOKEN#${token}`;
 
 function runItem(run: WorkflowRun): StoredItem {
   const { input, output, executionContext, error, ...envelope } = run;
@@ -160,12 +164,30 @@ function hookItem(hook: Hook): StoredItem {
     SK: hookSK(hook.hookId),
     GSI1PK: hookSK(hook.hookId),
     GSI1SK: hookSK(hook.hookId),
-    GSI2PK: `TOKEN#${hook.token}`,
-    GSI2SK: `TOKEN#${hook.token}`,
+    GSI2PK: tokenKey(hook.token),
+    GSI2SK: tokenKey(hook.token),
     entity: 'hook',
     runId: hook.runId,
     doc: encodeJson(envelope),
     metadataCbor: cborEncode(metadata),
+  };
+}
+
+// A standalone item whose PK is the token itself, used purely to reserve
+// token uniqueness with a conditional write. The hook item's own
+// ConditionExpression only guards its own PK/SK (RUN#<runId>/HOOK#<hookId>),
+// so two different hookIds can otherwise both succeed in claiming the same
+// token — the only thing that previously caught that was a preceding read
+// against GSI2, which is eventually consistent. This item lets the token
+// claim itself be part of the same atomic TransactWriteCommand as the hook
+// write (see putHook).
+function hookTokenReservationItem(hook: Hook): StoredItem {
+  return {
+    PK: tokenKey(hook.token),
+    SK: tokenKey(hook.token),
+    entity: 'hook_token',
+    runId: hook.runId,
+    doc: encodeJson({ runId: hook.runId, hookId: hook.hookId }),
   };
 }
 
@@ -397,30 +419,143 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       TableName: tableName,
       IndexName: 'GSI2',
       KeyConditionExpression: 'GSI2PK = :pk',
-      ExpressionAttributeValues: { ':pk': `TOKEN#${token}` },
+      ExpressionAttributeValues: { ':pk': tokenKey(token) },
       Limit: 1,
     });
     return items.length ? readHook(items[0]) : null;
   }
 
+  /**
+   * Reads the token-reservation item directly by its own PK/SK (a plain
+   * GetCommand, strongly consistent) rather than via GSI2 (eventually
+   * consistent). Used right after losing a putHook token race, when we need
+   * the winning hook's runId for the hook_conflict event's conflictingRunId
+   * and can't afford to read a stale/empty GSI2 result.
+   */
+  async function getHookTokenReservation(
+    token: string
+  ): Promise<{ runId: string; hookId: string } | null> {
+    const res = await ddb.send(
+      new GetCommand({
+        TableName: tableName,
+        Key: { PK: tokenKey(token), SK: tokenKey(token) },
+      })
+    );
+    if (!res.Item || typeof res.Item.doc !== 'string') return null;
+    return decodeJson<{ runId: string; hookId: string }>(res.Item.doc);
+  }
+
+  /**
+   * Creates the hook item and its token-reservation item atomically. Both
+   * writes are conditioned on attribute_not_exists(PK): the hook write
+   * guards against a duplicate hookId, the reservation write guards against
+   * a duplicate token. Doing this in one transaction (rather than a
+   * getHookByToken() read followed by a plain put) closes the race where two
+   * different hookIds claim the same token in the same tick — the read is
+   * against GSI2, which is only eventually consistent.
+   *
+   * Throws the raw DynamoDB error on failure; callers should inspect it with
+   * `hookConflictKind()` to tell a token conflict from a hookId conflict.
+   */
   async function putHook(hook: Hook): Promise<void> {
     await ddb.send(
-      new PutCommand({
-        TableName: tableName,
-        Item: hookItem(hook),
-        // Idempotent create: fail if a hook with this id already exists.
-        ConditionExpression: 'attribute_not_exists(PK)',
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: tableName,
+              Item: hookItem(hook),
+              ConditionExpression: 'attribute_not_exists(PK)',
+            },
+          },
+          {
+            Put: {
+              TableName: tableName,
+              Item: hookTokenReservationItem(hook),
+              ConditionExpression: 'attribute_not_exists(PK)',
+            },
+          },
+        ],
       })
     );
   }
 
-  async function deleteHook(runId: string, hookId: string): Promise<void> {
-    await ddb.send(
-      new DeleteCommand({
-        TableName: tableName,
-        Key: { PK: runPK(runId), SK: hookSK(hookId) },
-      })
-    );
+  /** Which TransactWriteCommand item in putHook's transaction failed its condition. */
+  function hookConflictKind(err: unknown): 'hookId' | 'token' | null {
+    if (
+      typeof err !== 'object' ||
+      err === null ||
+      (err as { name?: string }).name !== 'TransactionCanceledException'
+    ) {
+      return null;
+    }
+    const reasons = (err as { CancellationReasons?: { Code?: string }[] })
+      .CancellationReasons;
+    if (reasons?.[1]?.Code === 'ConditionalCheckFailed') return 'token';
+    if (reasons?.[0]?.Code === 'ConditionalCheckFailed') return 'hookId';
+    return null;
+  }
+
+  async function hookCreatedEventExists(correlationId: string): Promise<boolean> {
+    const items = await queryAll({
+      TableName: tableName,
+      IndexName: 'GSI1',
+      KeyConditionExpression: 'GSI1PK = :pk',
+      ExpressionAttributeValues: { ':pk': `CORR#${correlationId}` },
+    });
+    return items.some((item) => readEvent(item)?.eventType === 'hook_created');
+  }
+
+  /**
+   * Called when a hook_created call finds that `owner` (a hook found either
+   * by token pre-check or by losing putHook's transaction) already claims the
+   * hookId/token being created. Same (runId, hookId) as the caller's own
+   * request means this is either an idempotent replay of the exact same
+   * hook_created call (queue at-least-once delivery, or the immediate
+   * re-invocation used for hook-conflict/getConflict signaling) or a
+   * crash-recovered orphaned hook row — the entity write and the event write
+   * are not atomic here, so a crash between them can leave a hook with no
+   * hook_created event in the log yet. Distinguish by checking the log:
+   *   - event exists  → real duplicate processing: throw EntityConflictError
+   *     so the runtime's concurrent-replay catch path (suspension-handler.ts's
+   *     createHookEvent) swallows it, instead of writing a self-conflict that
+   *     would later replay as a HookConflictError against its own run.
+   *   - event missing → orphaned row: return it so the caller skips
+   *     re-creating the hook and falls through to complete the write.
+   * Returns null when `owner` is a genuinely different (runId, hookId) —
+   * the caller should treat that as a real conflict. Mirrors
+   * @workflow/world-postgres's handling of the same race
+   * (see vercel/workflow#2283).
+   */
+  async function resolveHookCreateConflict(
+    owner: { runId: string; hookId: string },
+    effectiveRunId: string,
+    correlationId: string
+  ): Promise<Hook | null> {
+    if (owner.runId !== effectiveRunId || owner.hookId !== correlationId) {
+      return null;
+    }
+    if (await hookCreatedEventExists(correlationId)) {
+      throw new EntityConflictError(`Hook '${correlationId}' already created`);
+    }
+    return getHookById(correlationId);
+  }
+
+  async function deleteHook(runId: string, hookId: string, token: string): Promise<void> {
+    await Promise.all([
+      ddb.send(
+        new DeleteCommand({
+          TableName: tableName,
+          Key: { PK: runPK(runId), SK: hookSK(hookId) },
+        })
+      ),
+      ddb.send(
+        new DeleteCommand({
+          TableName: tableName,
+          Key: { PK: tokenKey(token), SK: tokenKey(token) },
+        })
+      ),
+    ]);
   }
 
   async function deleteAllHooksForRun(runId: string): Promise<void> {
@@ -430,14 +565,30 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       ExpressionAttributeValues: { ':pk': runPK(runId), ':sk': 'HOOK#' },
     });
     await Promise.all(
-      items.map((item) =>
-        ddb.send(
-          new DeleteCommand({
-            TableName: tableName,
-            Key: { PK: item.PK as string, SK: item.SK as string },
-          })
-        )
-      )
+      items.flatMap((item) => {
+        const deletes = [
+          ddb.send(
+            new DeleteCommand({
+              TableName: tableName,
+              Key: { PK: item.PK as string, SK: item.SK as string },
+            })
+          ),
+        ];
+        // Each hook item's GSI2PK/GSI2SK equal its token reservation item's
+        // own PK/SK (see hookTokenReservationItem) — reuse them here instead
+        // of re-decoding the token out of `doc`.
+        if (item.GSI2PK && item.GSI2SK) {
+          deletes.push(
+            ddb.send(
+              new DeleteCommand({
+                TableName: tableName,
+                Key: { PK: item.GSI2PK as string, SK: item.GSI2SK as string },
+              })
+            )
+          );
+        }
+        return deletes;
+      })
     );
   }
 
@@ -622,7 +773,58 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           effectiveRunId = runId;
         }
 
-        const currentRun = await getRunById(effectiveRunId);
+        let currentRun = await getRunById(effectiveRunId);
+
+        // Resilient start: if the original run_created event failed to persist
+        // (e.g. a transient error during start()), the queued run_started event
+        // carries the original run input so the run can be bootstrapped here
+        // instead of failing outright — start() already accepted the run via
+        // the queue and told the caller creation would be retried async.
+        // Mirrors @workflow/world-postgres's handling of the same contract.
+        if (!currentRun && data.eventType === 'run_started' && data.eventData) {
+          const { deploymentId, workflowName, input, executionContext } = data.eventData;
+          if (deploymentId && workflowName && input !== undefined) {
+            const bootstrapRun: WorkflowRun = {
+              runId: effectiveRunId,
+              deploymentId,
+              workflowName,
+              status: 'pending',
+              specVersion: effectiveSpecVersion,
+              executionContext,
+              input,
+              output: undefined,
+              error: undefined,
+              startedAt: undefined,
+              completedAt: undefined,
+              createdAt: now,
+              updatedAt: now,
+            } as WorkflowRun;
+            try {
+              await ddb.send(
+                new PutCommand({
+                  TableName: tableName,
+                  Item: runItem(bootstrapRun),
+                  // Idempotent create: fail if a concurrent bootstrap/run_created won the race.
+                  ConditionExpression: 'attribute_not_exists(PK)',
+                })
+              );
+              const runCreatedEvent: Event = {
+                eventType: 'run_created',
+                runId: effectiveRunId,
+                eventId: `evnt_${generateUlid()}`,
+                createdAt: now,
+                specVersion: effectiveSpecVersion,
+                eventData: { deploymentId, workflowName, input, executionContext },
+              } as Event;
+              await putEvent(runCreatedEvent);
+              currentRun = bootstrapRun;
+            } catch (err) {
+              if (!isConditionalCheckFailed(err)) throw err;
+              // Lost the race to a concurrent run_created/bootstrap — re-read.
+              currentRun = await getRunById(effectiveRunId);
+            }
+          }
+        }
 
         if (currentRun) {
           if (requiresNewerWorld(currentRun.specVersion)) {
@@ -728,6 +930,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
           }
         }
 
+        let hookForDisposal: Hook | null = null;
         if (
           (data.eventType === 'hook_received' ||
             data.eventType === 'hook_disposed') &&
@@ -739,6 +942,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
               status: 404,
             });
           }
+          hookForDisposal = existingHook;
         }
 
         let run: WorkflowRun | undefined;
@@ -768,6 +972,19 @@ export function createStorage(config: DynamoStorageConfig): Storage {
             throw new WorkflowWorldError(`Run not found: ${effectiveRunId}`, {
               status: 404,
             });
+          }
+          // Idempotent for redeliveries: a run that's already running just
+          // returns as-is, with no new run_started event written. Besides
+          // avoiding a pointless write, this matters for replay determinism —
+          // core's deterministic workflow clock advances via each consumed
+          // event's createdAt (see events-consumer.ts), so a fresh event here
+          // on every redelivery would re-pin the clock to "now" right before
+          // replayed workflow code re-reads Date.now(), making elapsed-time
+          // measurements across a suspend/resume collapse to a few ms
+          // regardless of how long the run actually waited. Matches
+          // @workflow/world-postgres's handling of the same event.
+          if (currentRun.status === 'running') {
+            return { run: filterRunData(currentRun, resolveData) };
           }
           run = {
             ...currentRun,
@@ -963,51 +1180,19 @@ export function createStorage(config: DynamoStorageConfig): Storage {
         } else if (data.eventType === 'hook_created') {
           const existingByToken = await getHookByToken(data.eventData.token);
           if (existingByToken) {
-            const conflictEvent: Event = {
-              eventType: 'hook_conflict',
-              correlationId: data.correlationId,
-              eventData: { token: data.eventData.token },
-              runId: effectiveRunId,
-              eventId,
-              createdAt: now,
-              specVersion: effectiveSpecVersion,
-            } as Event;
-            await putEvent(conflictEvent);
-            return {
-              event: filterEventData(conflictEvent, resolveData),
-              run,
-              step,
-              hook: undefined,
-            };
-          }
-
-          const existingById = await getHookById(data.correlationId);
-          if (existingById) {
-            throw new WorkflowWorldError(
-              `Hook '${data.correlationId}' already exists`,
-              { status: 409 }
+            const recovered = await resolveHookCreateConflict(
+              existingByToken,
+              effectiveRunId,
+              data.correlationId
             );
-          }
-
-          hook = {
-            runId: effectiveRunId,
-            hookId: data.correlationId,
-            token: data.eventData.token,
-            metadata: data.eventData.metadata,
-            ownerId: 'aws-owner',
-            projectId: 'aws-project',
-            environment: 'development',
-            createdAt: now,
-            specVersion: effectiveSpecVersion,
-          } as Hook;
-          try {
-            await putHook(hook);
-          } catch (err) {
-            if (isConditionalCheckFailed(err)) {
+            if (!recovered) {
               const conflictEvent: Event = {
                 eventType: 'hook_conflict',
                 correlationId: data.correlationId,
-                eventData: { token: data.eventData.token },
+                eventData: {
+                  token: data.eventData.token,
+                  conflictingRunId: existingByToken.runId,
+                },
                 runId: effectiveRunId,
                 eventId,
                 createdAt: now,
@@ -1021,11 +1206,97 @@ export function createStorage(config: DynamoStorageConfig): Storage {
                 hook: undefined,
               };
             }
-            throw err;
+            // Orphaned hook row (crash between the hook write and the
+            // hook_created event write below): reuse it and fall through to
+            // complete the write, instead of re-inserting the hook.
+            hook = recovered;
+          } else {
+            const existingById = await getHookById(data.correlationId);
+            if (existingById) {
+              const recovered = await resolveHookCreateConflict(
+                existingById,
+                effectiveRunId,
+                data.correlationId
+              );
+              if (!recovered) {
+                throw new WorkflowWorldError(
+                  `Hook '${data.correlationId}' already exists`,
+                  { status: 409 }
+                );
+              }
+              hook = recovered;
+            } else {
+              hook = {
+                runId: effectiveRunId,
+                hookId: data.correlationId,
+                token: data.eventData.token,
+                metadata: data.eventData.metadata,
+                ownerId: 'aws-owner',
+                projectId: 'aws-project',
+                environment: 'development',
+                createdAt: now,
+                specVersion: effectiveSpecVersion,
+                isWebhook: data.eventData.isWebhook,
+              } as Hook;
+              try {
+                await putHook(hook);
+              } catch (err) {
+                const conflictKind = hookConflictKind(err);
+                if (conflictKind === 'token') {
+                  // The transaction lost the token race after our pre-check missed
+                  // it (GSI2 lag) — read the reservation item directly (strongly
+                  // consistent) to find who actually won it.
+                  const reservation = await getHookTokenReservation(data.eventData.token);
+                  const recovered = reservation
+                    ? await resolveHookCreateConflict(reservation, effectiveRunId, data.correlationId)
+                    : null;
+                  if (recovered) {
+                    hook = recovered;
+                  } else {
+                    const conflictEvent: Event = {
+                      eventType: 'hook_conflict',
+                      correlationId: data.correlationId,
+                      eventData: {
+                        token: data.eventData.token,
+                        conflictingRunId: reservation?.runId,
+                      },
+                      runId: effectiveRunId,
+                      eventId,
+                      createdAt: now,
+                      specVersion: effectiveSpecVersion,
+                    } as Event;
+                    await putEvent(conflictEvent);
+                    return {
+                      event: filterEventData(conflictEvent, resolveData),
+                      run,
+                      step,
+                      hook: undefined,
+                    };
+                  }
+                } else if (conflictKind === 'hookId') {
+                  // Lost the hookId guard to a concurrent creator (the pre-check
+                  // above raced too) — same recovery: idempotent replay throws,
+                  // an orphaned row is reused.
+                  const concurrent = await getHookById(data.correlationId);
+                  const recovered = concurrent
+                    ? await resolveHookCreateConflict(concurrent, effectiveRunId, data.correlationId)
+                    : null;
+                  if (!recovered) {
+                    throw new WorkflowWorldError(
+                      `Hook '${data.correlationId}' already exists`,
+                      { status: 409 }
+                    );
+                  }
+                  hook = recovered;
+                } else {
+                  throw err;
+                }
+              }
+            }
           }
         } else if (data.eventType === 'hook_disposed') {
-          if (data.correlationId) {
-            await deleteHook(effectiveRunId, data.correlationId);
+          if (data.correlationId && hookForDisposal) {
+            await deleteHook(effectiveRunId, data.correlationId, hookForDisposal.token);
           }
         }
 
@@ -1145,7 +1416,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       async get(hookId: string, params?: GetHookParams) {
         const hook = await getHookById(hookId);
         if (!hook) {
-          throw new WorkflowWorldError(`Hook not found: ${hookId}`, { status: 404 });
+          throw new HookNotFoundError(hookId);
         }
         return filterHookData(hook, params?.resolveData);
       },
@@ -1153,9 +1424,7 @@ export function createStorage(config: DynamoStorageConfig): Storage {
       async getByToken(token: string, params?: GetHookParams) {
         const hook = await getHookByToken(token);
         if (!hook) {
-          throw new WorkflowWorldError(`Hook not found for token: ${token}`, {
-            status: 404,
-          });
+          throw new HookNotFoundError(token);
         }
         return filterHookData(hook, params?.resolveData);
       },
@@ -1203,7 +1472,11 @@ export function createStorage(config: DynamoStorageConfig): Storage {
             limit: params.pagination?.limit,
             cursor: params.pagination?.cursor,
           },
-          'desc',
+          // Default to creation order (oldest first), matching
+          // @workflow/world-postgres. Callers that create several hooks
+          // upfront and correlate them by list position (as the webhookWorkflow
+          // e2e test does) depend on this.
+          'asc',
           100
         );
 
