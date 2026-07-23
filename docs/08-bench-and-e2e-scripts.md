@@ -169,26 +169,26 @@ indexed by a short world id (`starter`, `turso`, `mongodb`, `redis`, and now `aw
 |---|---|---|
 | `WORLD_PACKAGE` | npm package name to build/pack/install | `@workflow-worlds/aws` |
 | `WORLD_LOCAL_DIR` | local path to build from | `packages/aws` |
-| `WORLD_SERVICE` | which Docker service the script itself must start | `none` (see below) |
+| `WORLD_SERVICE` | which Docker service the script itself must start | `localstack` |
 | `WORLD_SETUP` | extra setup command run inside the upstream app dir | *(empty)* |
-| `WORLD_ENV` | env vars exported before the upstream dev server starts | `WORKFLOW_TARGET_WORLD=@workflow-worlds/aws`, `WORKFLOW_AWS_LOCAL=true` |
+| `WORLD_ENV` | env vars exported before the upstream dev server starts | `WORKFLOW_TARGET_WORLD=@workflow-worlds/aws`, `WORKFLOW_AWS_ENDPOINT=http://localhost:4566`, region + test credentials |
 
-**Design note on `WORLD_SERVICE[aws]=none`:** for `mongodb`/`redis`, the script owns the
-service's entire lifecycle — `start_mongodb`/`start_redis` functions `docker run -d --name
-e2e-mongodb ...`, poll for readiness, and the `cleanup()` trap explicitly `docker stop`/`docker rm`s
-those named containers on exit. `aws` deliberately does *not* follow that pattern: the world package
-already has a purpose-built `WORKFLOW_AWS_LOCAL=true` feature
-(`packages/aws/src/local.ts`) that starts a LocalStack container via `testcontainers` internally,
-including its own `SIGINT`/`SIGTERM` shutdown handling and (via testcontainers' Ryuk reaper
-sidecar) automatic cleanup even on unclean exit. Duplicating that lifecycle management in bash
-would be redundant and drift-prone, so the script simply sets `WORKFLOW_AWS_LOCAL=true` in
-`WORLD_ENV[aws]` and lets the world manage it. The practical consequence: `WORLD_SERVICE[aws]=none`
-means the script's own "Step 4: Starting Docker services" phase is a no-op for `aws` (it logs "No
-Docker services needed" and skips the `command -v docker` check that phase would otherwise run) —
-but Docker itself is still a hard runtime requirement, just satisfied transitively by
-`testcontainers` when the upstream app's dev server first touches the World. If Docker isn't
-running, the failure will surface later and less clearly (inside the upstream Next.js dev server's
-logs) than it would for `mongodb`/`redis`, where the script fails fast with an explicit error.
+**Design note on `WORLD_SERVICE[aws]=localstack` (superseded an earlier `none` design):** the
+first cut set this to `none` and relied on the world package's own `WORKFLOW_AWS_LOCAL=true`
+feature (`packages/aws/src/local.ts`), which starts LocalStack via `testcontainers` from inside
+the app process itself — reasoning that duplicating `start_mongodb`/`start_redis`-style bash
+lifecycle management would be redundant. That broke in practice: `testcontainers` talks to the
+Docker daemon over a Unix socket (`socketPath`), and the upstream `nextjs-turbopack` app's
+`instrumentation.ts` registers `@vercel/otel`, which auto-instruments *all* outgoing HTTP —
+including that Docker-socket call — and crashed with `Error: Cannot construct a network URL:
+options.socketPath is specified, indicating a Unix domain socket` the moment the World touched
+Docker. `WORLD_SERVICE[aws]` now follows the `mongodb`/`redis` pattern exactly: a `start_localstack`
+function `docker run`s `localstack/localstack:3` externally, polls
+`http://localhost:4566/_localstack/health`, and the `cleanup()` trap stops/removes it — so the app
+process only ever makes plain `http://localhost:4566` HTTP calls (no socket path), which
+`@vercel/otel` instruments without issue. `WORKFLOW_AWS_LOCAL=true` is still correct and unaffected
+for contexts that aren't OTel-instrumented — the aws package's own vitest suite and `pnpm
+bench:aws` (the in-repo Nitro workbench has no OTel registration).
 
 ### 2.3 The 8 steps (from the script's own section banners)
 
@@ -217,8 +217,18 @@ logs) than it would for `mongodb`/`redis`, where the script fails fast with an e
    the cloned upstream repo — `nextjs-turbopack` is the default `E2E_APP_NAME`, one of the upstream
    repo's own example apps used as the e2e host (the analogue of this repo's `workbench/`, but
    owned by upstream). Then runs `WORLD_SETUP[$WORLD_ID]` if non-empty (only `turso` needs one, to
-   provision its SQLite file via `workflow-turso-setup`; `aws` needs none since LocalStack
-   provisioning is handled by `WORKFLOW_AWS_LOCAL`).
+   provision its SQLite file via `workflow-turso-setup`).
+5b. **Ensure the World's background worker starts**: every world in this repo — plus the official
+   `@workflow/world-postgres` — buffers queue messages until `world.start()` is called; without it
+   every run sits in `pending` forever. The shared `nextjs-turbopack` app's `instrumentation.ts`
+   only registers OpenTelemetry by default, because it's normally exercised against
+   `@workflow/world-local`, which doesn't need an explicit `start()`. This step patches that file
+   (converting `register()` to `async` and inserting a guarded `await getWorld().start?.()` call)
+   so whichever world `WORKFLOW_TARGET_WORLD` points at actually gets started. Applied
+   unconditionally rather than gated per world, since `start?.()` is a safe no-op for worlds that
+   don't define it; skipped with a warning (not a silent failure) if the expected `register()`
+   marker text isn't found, so an upstream content change fails loudly instead of quietly leaving
+   every run stuck pending.
 6. **Resolve symlinks**: runs the upstream repo's own `scripts/resolve-symlinks.sh` if present,
    which (based on its usage here) flattens pnpm workspace symlinks inside the target app so a
    plain `node_modules` resolution behaves correctly outside the monorepo — necessary because step 3

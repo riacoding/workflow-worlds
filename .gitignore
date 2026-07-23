@@ -45,3 +45,5 @@ cdk.out/
 cdk-outputs.json
 .cdk.staging/
 cdk.context.json
+
+notes-for-release.md

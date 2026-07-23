@@ -17,7 +17,15 @@ set -euo pipefail
 #
 # Environment:
 #   E2E_UPSTREAM_DIR    Override upstream clone location (default: .e2e-upstream)
-#   E2E_UPSTREAM_REF    Git ref to checkout (default: main)
+#   E2E_UPSTREAM_REF    Git ref to checkout (default: workflow@4.6.0 -- NOT main; main
+#                       tracks vercel/workflow's in-progress 5.0 line, which requires
+#                       spec version 5 (packages/core/src/runtime/world-compatibility.ts's
+#                       assertWorldSupportsRuntimeProtocol) and rejects every world in this
+#                       repo, which only implements spec version 3
+#                       (SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT). workflow@4.6.0 is the
+#                       last tag before that check existed, and matches what
+#                       workbench/package.json pins its own `workflow` dependency to. Bump
+#                       this default deliberately once a world here targets spec version 5.
 #   E2E_APP_NAME        Workbench app to test (default: nextjs-turbopack)
 #   E2E_SKIP_BUILD      Skip building upstream packages (default: false)
 #   E2E_KEEP_SERVICES   Don't stop Docker services on exit (default: false)
@@ -27,7 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 UPSTREAM_DIR="${E2E_UPSTREAM_DIR:-$ROOT_DIR/.e2e-upstream}"
-UPSTREAM_REF="${E2E_UPSTREAM_REF:-main}"
+UPSTREAM_REF="${E2E_UPSTREAM_REF:-workflow@4.6.0}"
 UPSTREAM_REPO="https://github.com/vercel/workflow.git"
 APP_NAME="${E2E_APP_NAME:-nextjs-turbopack}"
 SKIP_BUILD="${E2E_SKIP_BUILD:-false}"
@@ -67,11 +75,19 @@ WORLD_SERVICE[starter]="none"
 WORLD_SERVICE[turso]="none"
 WORLD_SERVICE[mongodb]="mongodb"
 WORLD_SERVICE[redis]="redis"
-# aws is "none" here (unlike mongodb/redis) because the world itself
-# auto-starts LocalStack via testcontainers when WORKFLOW_AWS_LOCAL=true is
-# set (see packages/aws/src/local.ts) — no docker run/stop orchestration is
-# needed in this script. Docker must still be installed and running.
-WORLD_SERVICE[aws]="none"
+# aws uses the script's own docker-managed LocalStack (start_localstack),
+# NOT the world's built-in WORKFLOW_AWS_LOCAL=true testcontainers auto-start.
+# testcontainers talks to the Docker daemon over a Unix socket
+# (socketPath), and the upstream nextjs-turbopack app's instrumentation.ts
+# registers @vercel/otel, which auto-instruments all outgoing HTTP —
+# including that Docker-socket call — and crashes with "Cannot construct a
+# network URL: options.socketPath is specified" because socket-path
+# requests have no network URL to build. Starting LocalStack externally
+# (like mongodb/redis) means the app process only ever makes normal
+# http://localhost:4566 calls, so @vercel/otel never sees a socketPath
+# request. WORKFLOW_AWS_LOCAL=true remains correct for the aws package's
+# own test suite and for `pnpm bench:aws`, which aren't OTel-instrumented.
+WORLD_SERVICE[aws]="localstack"
 
 declare -A WORLD_SETUP
 WORLD_SETUP[starter]=""
@@ -91,7 +107,10 @@ WORKFLOW_MONGODB_DATABASE_NAME=workflow"
 WORLD_ENV[redis]="WORKFLOW_TARGET_WORLD=@workflow-worlds/redis
 WORKFLOW_REDIS_URI=redis://localhost:6379"
 WORLD_ENV[aws]="WORKFLOW_TARGET_WORLD=@workflow-worlds/aws
-WORKFLOW_AWS_LOCAL=true"
+WORKFLOW_AWS_ENDPOINT=http://localhost:4566
+WORKFLOW_AWS_REGION=us-west-2
+WORKFLOW_AWS_ACCESS_KEY_ID=test
+WORKFLOW_AWS_SECRET_ACCESS_KEY=test"
 
 # --- Functions --------------------------------------------------------------
 
@@ -103,7 +122,7 @@ usage() {
   echo "  turso      Turso/libSQL world (file-based, no services)"
   echo "  mongodb    MongoDB world (requires Docker)"
   echo "  redis      Redis world (requires Docker)"
-  echo "  aws        AWS DynamoDB/SQS world (requires Docker; auto-starts LocalStack)"
+  echo "  aws        AWS DynamoDB/SQS world (requires Docker; starts a LocalStack container)"
   echo ""
   echo -e "${BOLD}Options:${NC}"
   echo "  --clean       Remove and re-clone the upstream repo"
@@ -112,7 +131,7 @@ usage() {
   echo ""
   echo -e "${BOLD}Environment Variables:${NC}"
   echo "  E2E_UPSTREAM_DIR    Override upstream clone location (default: .e2e-upstream)"
-  echo "  E2E_UPSTREAM_REF    Git ref to checkout (default: main)"
+  echo "  E2E_UPSTREAM_REF    Git ref to checkout (default: workflow@4.6.0, not main -- see header)"
   echo "  E2E_APP_NAME        Workbench app to test (default: nextjs-turbopack)"
   echo "  E2E_SKIP_BUILD      Skip building upstream packages if set to 'true'"
   echo "  E2E_KEEP_SERVICES   Don't stop Docker services on exit if set to 'true'"
@@ -161,6 +180,11 @@ cleanup() {
       docker stop e2e-redis 2>/dev/null || true
       docker rm e2e-redis 2>/dev/null || true
     fi
+    if docker ps -q --filter "name=e2e-localstack" 2>/dev/null | grep -q .; then
+      log "Stopping LocalStack container..."
+      docker stop e2e-localstack 2>/dev/null || true
+      docker rm e2e-localstack 2>/dev/null || true
+    fi
   fi
 
   if [[ $exit_code -eq 0 ]]; then
@@ -193,6 +217,30 @@ start_mongodb() {
     sleep 2
   done
   log_error "MongoDB failed to start within 60 seconds"
+  exit 1
+}
+
+start_localstack() {
+  if docker ps --filter "name=e2e-localstack" --format '{{.Names}}' 2>/dev/null | grep -q "e2e-localstack"; then
+    log "LocalStack container already running"
+    return
+  fi
+
+  # Clean up stopped container with same name
+  docker rm e2e-localstack 2>/dev/null || true
+
+  log "Starting LocalStack (localstack/localstack:3)..."
+  docker run -d --name e2e-localstack -p 4566:4566 localstack/localstack:3
+
+  log "Waiting for LocalStack to be ready..."
+  for i in $(seq 1 30); do
+    if curl -s http://localhost:4566/_localstack/health 2>/dev/null | grep -q '"dynamodb"'; then
+      log_success "LocalStack is ready"
+      return
+    fi
+    sleep 2
+  done
+  log_error "LocalStack failed to start within 60 seconds"
   exit 1
 }
 
@@ -469,6 +517,9 @@ if [[ "$SERVICE" != "none" ]]; then
     redis)
       start_redis
       ;;
+    localstack)
+      start_localstack
+      ;;
   esac
 else
   log_step "Step 4: No Docker services needed"
@@ -488,6 +539,53 @@ if [[ -n "$SETUP_CMD" ]]; then
   cd "$UPSTREAM_DIR/workbench/$APP_NAME"
   eval "$SETUP_CMD"
   cd "$UPSTREAM_DIR"
+fi
+
+# =============================================================================
+# Step 5b: Ensure the World's background worker gets started
+# =============================================================================
+# Every world in this repo (aws, redis, mongodb, starter, turso) — and even
+# the official @workflow/world-postgres — buffers queue messages until
+# world.start() is called; without it nothing ever leaves `pending`. The
+# shared nextjs-turbopack workbench app's instrumentation.ts only registers
+# OpenTelemetry by default (it's normally run against @workflow/world-local,
+# which doesn't need an explicit start()), so patch it here to also start
+# whichever world WORKFLOW_TARGET_WORLD points at. `world.start?.()` is a
+# safe no-op for worlds that don't define start (e.g. world-local), so this
+# is applied unconditionally rather than gated per world.
+log_step "Step 5b: Ensuring the World's background worker starts"
+
+INSTRUMENTATION_FILE="$UPSTREAM_DIR/workbench/$APP_NAME/instrumentation.ts"
+if [[ -f "$INSTRUMENTATION_FILE" ]]; then
+  node -e "
+    const fs = require('fs');
+    const path = process.argv[1];
+    let content = fs.readFileSync(path, 'utf8');
+
+    if (content.includes('getWorld')) {
+      console.error('  instrumentation.ts already starts the World, leaving as-is');
+    } else if (!content.includes('export function register()')) {
+      console.error('  Could not find \"export function register()\" in instrumentation.ts to patch — skipping.');
+      console.error('  Worlds that require an explicit start() will get stuck pending without it.');
+    } else {
+      content = content.replace('export function register()', 'export async function register()');
+      const startSnippet = [
+        '',
+        '  if (process.env.NEXT_RUNTIME === \'nodejs\') {',
+        '    const { getWorld } = await import(\'workflow/runtime\');',
+        '    const world = getWorld();',
+        '    await world.start?.();',
+        '  }',
+        '',
+      ].join('\n');
+      const lastBrace = content.lastIndexOf('}');
+      content = content.slice(0, lastBrace) + startSnippet + content.slice(lastBrace);
+      fs.writeFileSync(path, content);
+      console.error('  Patched instrumentation.ts to call world.start()');
+    }
+  " "$INSTRUMENTATION_FILE"
+else
+  log_warn "No instrumentation.ts found at $INSTRUMENTATION_FILE — skipping World-start patch"
 fi
 
 # =============================================================================
