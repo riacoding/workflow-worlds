@@ -1,0 +1,55 @@
+{
+  "name": "@workflow-worlds/business-state",
+  "version": "0.1.0",
+  "description": "Standalone HTTP business-process state store, deployed alongside (but independent of) a Workflow DevKit World",
+  "author": "Riacoding",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/riacoding/workflow-worlds.git",
+    "directory": "packages/business-state"
+  },
+  "homepage": "https://github.com/riacoding/workflow-worlds/tree/main/packages/business-state#readme",
+  "bugs": {
+    "url": "https://github.com/riacoding/workflow-worlds/issues"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "pnpm build && vitest run",
+    "test:only": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0"
+  },
+  "devDependencies": {
+    "@testcontainers/localstack": "^10.0.0",
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^22.19.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "workflow",
+    "business-state",
+    "dynamodb",
+    "api-gateway",
+    "lambda"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

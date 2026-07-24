@@ -1,0 +1,8 @@
+{
+  "app": "node dist/bin/app.js",
+  "watch": {
+    "include": ["src/**"],
+    "exclude": ["dist/**", "cdk.out/**", "node_modules/**"]
+  },
+  "context": {}
+}

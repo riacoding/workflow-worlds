@@ -1,4 +1,8 @@
 packages:
   - 'packages/*'
   - 'packages/aws/infra'
+  - 'packages/business-state/infra'
   - 'workbench'
+
+onlyBuiltDependencies:
+  - esbuild

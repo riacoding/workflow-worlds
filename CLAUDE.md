@@ -136,6 +136,7 @@ WORKFLOW_DEBUG=mongodb-world,turso-world pnpm test
 | `turso-world` | Turso |
 | `starter-world` | Starter |
 | `workbench` | Workbench plugin |
+| `business-state` | Business State (not a World — see `packages/business-state`) |
 
 **Implementation:** Create `src/utils.ts` with a debug logger (copy from `packages/starter/src/utils.ts`):
 
