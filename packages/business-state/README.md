@@ -62,15 +62,23 @@ async function recordBusinessState(input: {
   metadata?: Record<string, unknown>;
 }) {
   'use step';
+  // The deployed ApiUrl output ends with a trailing slash (e.g. ".../prod/") —
+  // strip it so this doesn't silently produce a double slash the API won't route.
+  const base = process.env.BUSINESS_STATE_API_URL!.replace(/\/$/, '');
   const res = await fetch(
-    `${process.env.BUSINESS_STATE_API_URL}/state/${input.subjectType}/${input.subjectId}/${input.process}`,
+    `${base}/state/${encodeURIComponent(input.subjectType)}/${encodeURIComponent(input.subjectId)}/${encodeURIComponent(input.process)}`,
     {
       method: 'PUT',
       headers: {
         'content-type': 'application/json',
         'x-api-key': process.env.BUSINESS_STATE_API_KEY!,
       },
-      body: JSON.stringify(input),
+      body: JSON.stringify({
+        state: input.state,
+        status: input.status,
+        runId: input.runId,
+        metadata: input.metadata,
+      }),
     }
   );
   if (!res.ok) throw new Error(`business-state write failed: ${res.status}`);

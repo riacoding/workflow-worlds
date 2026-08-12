@@ -65,7 +65,7 @@ export function createWorld(config: AwsWorldConfig = {}): World {
 
     initPromise = (async () => {
       if (resolved.local) {
-        const { endpoint } = await startLocalStack()
+        const { endpoint } = await startLocalStack({ endpoint: resolved.endpoint })
         resolved.endpoint = resolved.endpoint ?? endpoint
         resolved.credentials = resolved.credentials ?? { accessKeyId: 'test', secretAccessKey: 'test' }
       }

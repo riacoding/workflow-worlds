@@ -148,8 +148,16 @@ hooks, errors, nullByte) plus the `@workflow-worlds/testing` storage/streamer co
 Setting `WORKFLOW_AWS_LOCAL=true` makes the World start its own [LocalStack](https://localstack.cloud)
 container (DynamoDB + SQS) on first use and point itself at it automatically — no manual
 endpoint, region, or credential setup needed, and nothing touches real AWS. Docker (or a
-compatible runtime) must be running. The container is ephemeral: it starts fresh each time the
-process starts and stops when the process receives `SIGINT`/`SIGTERM`.
+compatible runtime) must be running.
+
+The container binds to a **fixed** host port — taken from `WORKFLOW_AWS_ENDPOINT`'s port when
+you've set one, otherwise LocalStack's own default (`4566`) — instead of a random one, so an
+explicitly-configured endpoint always matches where the container actually is. It also **persists
+across process restarts**: a dev-server restart reuses the already-running container (matched by
+image/port/env) instead of starting a duplicate, so it does *not* stop on `SIGINT`/`SIGTERM` the
+way it used to. Stop it yourself with `docker stop`/`docker rm` when you're done with it; if you
+change `WORKFLOW_AWS_ENDPOINT`'s port between runs, the old container is left running rather than
+reused, since it no longer matches — clean it up manually too.
 
 ```bash
 WORKFLOW_TARGET_WORLD=./dist/index.js
@@ -169,11 +177,11 @@ pnpm build
 
 # 2. Pack it into a tarball
 pnpm pack --pack-destination /tmp/workflow-aws-tarballs
-# -> /tmp/workflow-aws-tarballs/workflow-worlds-aws-0.1.0.tgz
+# -> /tmp/workflow-aws-tarballs/workflow-worlds-aws-0.1.5.tgz
 
 # 3. In the other project — install the tarball
 cd /path/to/your-project
-pnpm add /tmp/workflow-aws-tarballs/workflow-worlds-aws-0.1.0.tgz
+pnpm add /tmp/workflow-aws-tarballs/workflow-worlds-aws-0.1.5.tgz
 # (npm/yarn equivalents work too — it's a plain tarball install)
 
 # 4. Point the runtime at it and enable local mode

@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/aws",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "AWS World implementation for Workflow DevKit (DynamoDB, SQS, EventBridge Scheduler, AppSync Events)",
   "author": "Riacoding",
   "license": "MIT",
