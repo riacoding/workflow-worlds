@@ -52,10 +52,10 @@ pnpm install
 pnpm --filter @workflow-worlds/aws-infra build
 
 # 2. (Optional) preview the changes
-pnpm --filter @workflow-worlds/aws-infra diff -- -c projectName=myapp -c stage=dev
+pnpm --filter @workflow-worlds/aws-infra run diff -c projectName=myapp -c stage=dev
 
 # 3. Deploy — writes outputs to cdk-outputs.json
-pnpm --filter @workflow-worlds/aws-infra deploy -- -c projectName=myapp -c stage=dev
+pnpm --filter @workflow-worlds/aws-infra run deploy -c projectName=myapp -c stage=dev
 
 # 4. Turn the deployed resource identifiers into WORKFLOW_* env vars
 eval "$(pnpm --filter @workflow-worlds/aws-infra print-env)"
@@ -70,7 +70,7 @@ eval "$(pnpm --filter @workflow-worlds/aws-infra print-env)"
 To tear everything down:
 
 ```bash
-pnpm --filter @workflow-worlds/aws-infra destroy -- -c projectName=myapp -c stage=dev
+pnpm --filter @workflow-worlds/aws-infra run destroy -c projectName=myapp -c stage=dev
 ```
 
 ## `recreate-table` (dev convenience)
@@ -102,7 +102,7 @@ refuses to run against a table name containing `prod`.
 
 ## `print-env`
 
-Reads `cdk-outputs.json` (produced by `pnpm deploy`, which always passes `--outputs-file
+Reads `cdk-outputs.json` (produced by `pnpm run deploy`, which always passes `--outputs-file
 cdk-outputs.json`) and prints `export WORKFLOW_...=...` lines to stdout — nothing else goes to
 stdout, so it's always safe to `eval`. Errors and diagnostics go to stderr. Pass an explicit path
 as the first argument if you've moved/renamed the outputs file: `pnpm print-env path/to/outputs.json`.

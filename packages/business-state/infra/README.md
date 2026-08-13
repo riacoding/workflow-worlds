@@ -35,10 +35,10 @@ org-wide** — a single shared instance, not one per project:
 pnpm install
 
 # 2. (Optional) preview the changes
-pnpm --filter @workflow-worlds/business-state-infra diff -- -c apps=onboarding,billing
+pnpm --filter @workflow-worlds/business-state-infra run diff -c apps=onboarding,billing
 
 # 3. Deploy — writes outputs to cdk-outputs.json
-pnpm --filter @workflow-worlds/business-state-infra deploy -- -c apps=onboarding,billing
+pnpm --filter @workflow-worlds/business-state-infra run deploy -c apps=onboarding,billing
 
 # 4. Print the API URL and how to retrieve each app's API key value
 pnpm --filter @workflow-worlds/business-state-infra print-info
@@ -58,8 +58,8 @@ To tear everything down (only works after an explicit destroy deploy — see "Na
 above):
 
 ```bash
-pnpm --filter @workflow-worlds/business-state-infra deploy -- -c apps=onboarding,billing -c removalPolicy=destroy
-pnpm --filter @workflow-worlds/business-state-infra destroy -- -c apps=onboarding,billing
+pnpm --filter @workflow-worlds/business-state-infra run deploy -c apps=onboarding,billing -c removalPolicy=destroy
+pnpm --filter @workflow-worlds/business-state-infra run destroy -c apps=onboarding,billing
 ```
 
 ## Adding a new app later
@@ -67,5 +67,5 @@ pnpm --filter @workflow-worlds/business-state-infra destroy -- -c apps=onboardin
 Redeploy with the new app name included in `-c apps=...` (existing apps' keys are untouched):
 
 ```bash
-pnpm --filter @workflow-worlds/business-state-infra deploy -- -c apps=onboarding,billing,referrals
+pnpm --filter @workflow-worlds/business-state-infra run deploy -c apps=onboarding,billing,referrals
 ```
