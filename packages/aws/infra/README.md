@@ -32,6 +32,11 @@ resource — and the CloudFormation stack itself — is namespaced `${projectNam
   when `stage=prod`, `destroy` otherwise. The SQS queue and IAM role always use CDK's default
   (`destroy`).
 
+`projectName` isn't a formality — skipping it is exactly how a table named plain `workflow`, with
+no namespacing at all, ended up in a real AWS account with 1,245 items in it. Some auto-provisioning
+run just never set one, and every other app doing the same thing would have landed in that same
+table. Always pass an explicit, real `projectName`.
+
 Pass these via `-c`, e.g. `-c projectName=myapp -c stage=dev`, on every `cdk`/`pnpm` command
 below — or persist them once in a `cdk.context.json` file in this directory (gitignored by
 default; commit it yourself if you want a fixed default checked into your repo).
@@ -45,6 +50,11 @@ default; commit it yourself if you want a fixed default checked into your repo).
   ```
 
 ## Deploy workflow
+
+**`myapp` below is a placeholder, not a real project name.** Running the plain `deploy`/`diff`/
+`destroy` scripts (not `:dev`) with your own `-c projectName=...` is the real-use path — `myapp`
+has already ended up as a real, permanent table name (`myapp-dev-workflow`) in a real AWS account
+from someone running a `:dev` script verbatim. Edit it first, every time.
 
 ```bash
 # 1. Install + build (from the monorepo root, or within this directory)
