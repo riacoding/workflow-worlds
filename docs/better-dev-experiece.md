@@ -24,7 +24,7 @@ Today a developer typically performs the following steps:
 3. Deploy infrastructure via CDK.
 4. Configure numerous environment variables.
 5. Start the application.
-6. Remember to pass `--backend=@workflow-worlds/aws` to CLI commands.
+6. Remember to pass `--backend=@riacoding/workflow-world-aws` to CLI commands.
 7. Remember to export AWS/LocalStack configuration in every terminal.
 
 The runtime works correctly, but the workflow is more manual than it should be.
@@ -36,7 +36,7 @@ The runtime works correctly, but the workflow is more manual than it should be.
 A developer should be able to install and deploy with only a few commands.
 
 ```bash
-pnpm add @workflow-worlds/aws
+pnpm add @riacoding/workflow-world-aws
 
 npx workflow-aws deploy --stage dev
 
@@ -111,7 +111,7 @@ Example contents:
 
 ```json
 {
-  "backend": "@workflow-worlds/aws",
+  "backend": "@riacoding/workflow-world-aws",
   "region": "us-west-2",
   "tableName": "workflow-dev",
   "queueUrl": "...",
@@ -139,7 +139,7 @@ export WORKFLOW_AWS_ENDPOINT=...
 export WORKFLOW_AWS_REGION=...
 ...
 
-npx workflow inspect runs --backend=@workflow-worlds/aws
+npx workflow inspect runs --backend=@riacoding/workflow-world-aws
 ```
 
 Desired:

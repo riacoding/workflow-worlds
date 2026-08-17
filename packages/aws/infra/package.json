@@ -1,7 +1,7 @@
 {
-  "name": "@workflow-worlds/aws-infra",
+  "name": "@riacoding/workflow-world-aws-infra",
   "version": "0.1.2",
-  "description": "AWS CDK infrastructure for @workflow-worlds/aws (DynamoDB table, SQS queue, EventBridge Scheduler group + role)",
+  "description": "AWS CDK infrastructure for @riacoding/workflow-world-aws (DynamoDB table, SQS queue, EventBridge Scheduler group + role)",
   "private": true,
   "type": "module",
   "scripts": {

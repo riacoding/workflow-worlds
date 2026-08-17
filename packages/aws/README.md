@@ -1,4 +1,4 @@
-# @workflow-worlds/aws
+# @riacoding/workflow-world-aws
 
 An AWS-native [World](https://github.com/mizzle-dev/workflow-worlds) implementation for the Workflow DevKit, backed entirely by AWS managed services.
 
@@ -12,13 +12,13 @@ An AWS-native [World](https://github.com/mizzle-dev/workflow-worlds) implementat
 ## Install
 
 ```bash
-pnpm add @workflow-worlds/aws
+pnpm add @riacoding/workflow-world-aws
 ```
 
 Then point the runtime at it:
 
 ```bash
-WORKFLOW_TARGET_WORLD=@workflow-worlds/aws
+WORKFLOW_TARGET_WORLD=@riacoding/workflow-world-aws
 ```
 
 **Important:** your app must call `world.start()` itself. Neither `@workflow/core` nor
@@ -185,7 +185,7 @@ pnpm add /tmp/workflow-aws-tarballs/workflow-worlds-aws-0.1.5.tgz
 # (npm/yarn equivalents work too — it's a plain tarball install)
 
 # 4. Point the runtime at it and enable local mode
-export WORKFLOW_TARGET_WORLD=@workflow-worlds/aws
+export WORKFLOW_TARGET_WORLD=@riacoding/workflow-world-aws
 export WORKFLOW_AWS_LOCAL=true
 export WORKFLOW_DEBUG=aws-world   # optional
 
@@ -213,7 +213,7 @@ the **already-running** container rather than starting a new empty one (use `WOR
 not `WORKFLOW_AWS_LOCAL=true`):
 
 ```bash
-WORKFLOW_TARGET_WORLD=@workflow-worlds/aws \
+WORKFLOW_TARGET_WORLD=@riacoding/workflow-world-aws \
 WORKFLOW_AWS_ENDPOINT=<endpoint-from-banner> \
 WORKFLOW_AWS_ACCESS_KEY_ID=test \
 WORKFLOW_AWS_SECRET_ACCESS_KEY=test \

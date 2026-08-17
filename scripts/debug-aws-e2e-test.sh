@@ -42,15 +42,15 @@ if [[ ! -d "$UPSTREAM_DIR" ]]; then
   exit 1
 fi
 
-echo "==> [1/6] Building @workflow-worlds/aws..."
+echo "==> [1/6] Building @riacoding/workflow-world-aws..."
 (cd "$ROOT_DIR/packages/aws" && pnpm build)
 
 TARBALL_NODE_MODULES=$(find "$UPSTREAM_DIR/node_modules/.pnpm" -maxdepth 1 -iname "@workflow-worlds+aws@file*" | head -1)
 if [[ -z "$TARBALL_NODE_MODULES" ]]; then
-  echo "ERROR: could not find an installed @workflow-worlds/aws under .e2e-upstream. Run 'pnpm e2e:aws' once first." >&2
+  echo "ERROR: could not find an installed @riacoding/workflow-world-aws under .e2e-upstream. Run 'pnpm e2e:aws' once first." >&2
   exit 1
 fi
-TARBALL_DIST="$TARBALL_NODE_MODULES/node_modules/@workflow-worlds/aws/dist"
+TARBALL_DIST="$TARBALL_NODE_MODULES/node_modules/@riacoding/workflow-world-aws/dist"
 cp -r "$ROOT_DIR/packages/aws/dist/"* "$TARBALL_DIST/"
 echo "    pushed fresh build into $TARBALL_DIST"
 
@@ -81,7 +81,7 @@ pkill -f "next dev --turbopack" 2>/dev/null || true
 sleep 1
 rm -f "$DEV_LOG"
 
-export WORKFLOW_TARGET_WORLD=@workflow-worlds/aws
+export WORKFLOW_TARGET_WORLD=@riacoding/workflow-world-aws
 export WORKFLOW_AWS_ENDPOINT=http://localhost:4566
 export WORKFLOW_AWS_REGION=us-west-2
 export WORKFLOW_AWS_ACCESS_KEY_ID=test

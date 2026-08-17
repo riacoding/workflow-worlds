@@ -61,7 +61,7 @@ WORLD_PACKAGE[starter]="@workflow-worlds/starter"
 WORLD_PACKAGE[turso]="@workflow-worlds/turso"
 WORLD_PACKAGE[mongodb]="@workflow-worlds/mongodb"
 WORLD_PACKAGE[redis]="@workflow-worlds/redis"
-WORLD_PACKAGE[aws]="@workflow-worlds/aws"
+WORLD_PACKAGE[aws]="@riacoding/workflow-world-aws"
 
 declare -A WORLD_LOCAL_DIR
 WORLD_LOCAL_DIR[starter]="$ROOT_DIR/packages/starter"
@@ -106,7 +106,7 @@ WORKFLOW_MONGODB_URI=mongodb://localhost:27017
 WORKFLOW_MONGODB_DATABASE_NAME=workflow"
 WORLD_ENV[redis]="WORKFLOW_TARGET_WORLD=@workflow-worlds/redis
 WORKFLOW_REDIS_URI=redis://localhost:6379"
-WORLD_ENV[aws]="WORKFLOW_TARGET_WORLD=@workflow-worlds/aws
+WORLD_ENV[aws]="WORKFLOW_TARGET_WORLD=@riacoding/workflow-world-aws
 WORKFLOW_AWS_ENDPOINT=http://localhost:4566
 WORKFLOW_AWS_REGION=us-west-2
 WORKFLOW_AWS_ACCESS_KEY_ID=test

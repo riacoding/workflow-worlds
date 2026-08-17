@@ -20,7 +20,7 @@ framework's own* example app and test suite.
 
 ```
 pnpm bench:aws
-  → root package.json: "bench:aws": "WORKFLOW_TARGET_WORLD=@workflow-worlds/aws pnpm bench"
+  → root package.json: "bench:aws": "WORKFLOW_TARGET_WORLD=@riacoding/workflow-world-aws pnpm bench"
   → root package.json: "bench": "pnpm --filter @workflow-worlds/workbench bench"
   → workbench/package.json: "bench": "bash scripts/run-bench.sh"
 ```
@@ -32,7 +32,7 @@ does roughly:
 ```js
 const targetWorld = process.env.WORKFLOW_TARGET_WORLD || defaultWorld();
 // ... 'vercel' / 'local' special-cased, otherwise:
-const mod = require(targetWorld);        // e.g. require('@workflow-worlds/aws')
+const mod = require(targetWorld);        // e.g. require('@riacoding/workflow-world-aws')
 return mod.default();                     // the World factory, per the CORRECT/WRONG export
                                            // convention documented in the root CLAUDE.md
 ```
@@ -41,8 +41,8 @@ Because this is a plain Node `require()` resolved from the workbench process's o
 resolution, **the target world package must be an installed dependency of `workbench/`** — not
 just present elsewhere in the workspace. This is why `workbench/package.json` lists
 `@workflow-worlds/turso`, `@workflow-worlds/mongodb`, `@workflow-worlds/redis`, and
-`@workflow-worlds/starter` as `devDependencies`. `@workflow-worlds/aws` has now been added to that
-same list for `bench:aws` to be able to resolve it — without it, `require('@workflow-worlds/aws')`
+`@workflow-worlds/starter` as `devDependencies`. `@riacoding/workflow-world-aws` has now been added to that
+same list for `bench:aws` to be able to resolve it — without it, `require('@riacoding/workflow-world-aws')`
 would throw `MODULE_NOT_FOUND` the first time the workbench process touches the world (lazily, on
 first request, since nothing eagerly imports it at build time).
 
@@ -62,7 +62,7 @@ first request, since nothing eagerly imports it at build time).
    cleanup EXIT` that kills it on script exit (success or failure).
 4. **World startup**: Nitro's plugin system runs `workbench/plugins/start-world.ts` on server
    init, which calls `getWorld()` (creating/caching the World singleton — this is the `require()`
-   call from §1.1) and then `world.start()` if the World defines it. For `@workflow-worlds/aws`,
+   call from §1.1) and then `world.start()` if the World defines it. For `@riacoding/workflow-world-aws`,
    `start()` (`packages/aws/src/index.ts`) triggers `ensureInitialized()`, which — if
    `WORKFLOW_AWS_LOCAL=true` is set — calls `startLocalStack()`
    (`packages/aws/src/local.ts`) to spin up a LocalStack container via `testcontainers` *before*
@@ -72,7 +72,7 @@ first request, since nothing eagerly imports it at build time).
 5. **Readiness poll**: polls `http://localhost:3000` every second, up to 30 attempts, before
    proceeding.
 6. **Run the benchmarks**: `WORLD_NAME` is derived by stripping the `@workflow-worlds/` prefix off
-   `WORKFLOW_TARGET_WORLD` (so `aws` for `@workflow-worlds/aws`), then:
+   `WORKFLOW_TARGET_WORLD` (so `aws` for `@riacoding/workflow-world-aws`), then:
    ```bash
    DEPLOYMENT_URL=http://localhost:3000 WORLD_NAME=aws \
      pnpm exec vitest bench --run --outputJson=bench-results-aws.json
@@ -136,7 +136,7 @@ look like unused imports from a pure dependency-graph perspective.
 Per the request, none of `bench:aws`, `e2e:aws`, `pnpm install`, or `pnpm build` were run to verify
 this end-to-end. Two things worth checking before the first real `bench:aws` run:
 
-- `packages/aws` must be built (`pnpm --filter @workflow-worlds/aws build`) so `dist/` exists for
+- `packages/aws` must be built (`pnpm --filter @riacoding/workflow-world-aws build`) so `dist/` exists for
   Nitro/`require()` to resolve — same requirement as any other world, just flagged explicitly since
   it wasn't exercised here.
 - `WORKFLOW_AWS_LOCAL=true` (or a pre-existing `WORKFLOW_AWS_ENDPOINT`) needs to be exported before
@@ -167,11 +167,11 @@ indexed by a short world id (`starter`, `turso`, `mongodb`, `redis`, and now `aw
 
 | Array | Purpose | `aws` value |
 |---|---|---|
-| `WORLD_PACKAGE` | npm package name to build/pack/install | `@workflow-worlds/aws` |
+| `WORLD_PACKAGE` | npm package name to build/pack/install | `@riacoding/workflow-world-aws` |
 | `WORLD_LOCAL_DIR` | local path to build from | `packages/aws` |
 | `WORLD_SERVICE` | which Docker service the script itself must start | `localstack` |
 | `WORLD_SETUP` | extra setup command run inside the upstream app dir | *(empty)* |
-| `WORLD_ENV` | env vars exported before the upstream dev server starts | `WORKFLOW_TARGET_WORLD=@workflow-worlds/aws`, `WORKFLOW_AWS_ENDPOINT=http://localhost:4566`, region + test credentials |
+| `WORLD_ENV` | env vars exported before the upstream dev server starts | `WORKFLOW_TARGET_WORLD=@riacoding/workflow-world-aws`, `WORKFLOW_AWS_ENDPOINT=http://localhost:4566`, region + test credentials |
 
 **Design note on `WORLD_SERVICE[aws]=localstack` (superseded an earlier `none` design):** the
 first cut set this to `none` and relied on the world package's own `WORKFLOW_AWS_LOCAL=true`
@@ -192,7 +192,7 @@ bench:aws` (the in-repo Nitro workbench has no OTel registration).
 
 ### 2.3 The 8 steps (from the script's own section banners)
 
-1. **Build local world package**: `pnpm build --filter="@workflow-worlds/aws..."` (builds the
+1. **Build local world package**: `pnpm build --filter="@riacoding/workflow-world-aws..."` (builds the
    world and its local workspace dependencies — for `aws` this pulls in
    `@workflow-worlds/testing` transitively the same way `packages/aws`'s own `pnpm test` does),
    then `pnpm pack` inside `packages/aws` to produce a `.tgz` tarball in
@@ -275,7 +275,7 @@ cosmetic-only gap, not a functional one).
 | File | Change |
 |---|---|
 | `package.json` (root) | Added `bench:aws` and `e2e:aws` scripts, mirroring the existing per-world pattern |
-| `workbench/package.json` | Added `@workflow-worlds/aws` as a `devDependency` — required for `require('@workflow-worlds/aws')` to resolve inside the bench host process |
+| `workbench/package.json` | Added `@riacoding/workflow-world-aws` as a `devDependency` — required for `require('@riacoding/workflow-world-aws')` to resolve inside the bench host process |
 | `scripts/e2e-upstream.sh` | Added `aws` entries to `WORLD_PACKAGE`/`WORLD_LOCAL_DIR`/`WORLD_SERVICE`/`WORLD_SETUP`/`WORLD_ENV`, and to the `usage()` help text |
 | `workbench/BENCHMARKS.md` | Documented `aws` prerequisites/env vars and added it to the world configuration table |
 

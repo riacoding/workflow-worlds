@@ -17,7 +17,7 @@
     "workflow": "4.6.0"
   },
   "devDependencies": {
-    "@workflow-worlds/aws": "workspace:*",
+    "@riacoding/workflow-world-aws": "workspace:*",
     "@workflow-worlds/mongodb": "workspace:*",
     "@workflow-worlds/redis": "workspace:*",
     "@workflow-worlds/starter": "workspace:*",

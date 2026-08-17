@@ -1,6 +1,6 @@
-# @workflow-worlds/aws-infra
+# @riacoding/workflow-world-aws-infra
 
-AWS CDK (TypeScript) infrastructure for [`@workflow-worlds/aws`](../README.md). Deploys the same
+AWS CDK (TypeScript) infrastructure for [`@riacoding/workflow-world-aws`](../README.md). Deploys the same
 resources that package's auto-provisioning code (`ensureTable`/`ensureQueue`/`ensureSchedulerGroup`
 in `../src/aws.ts`) creates at first run — as real, versioned CloudFormation — plus the IAM role
 the EventBridge Scheduler needs to deliver to SQS for delays beyond SQS's 12-hour ceiling (today a
@@ -59,28 +59,28 @@ from someone running a `:dev` script verbatim. Edit it first, every time.
 ```bash
 # 1. Install + build (from the monorepo root, or within this directory)
 pnpm install
-pnpm --filter @workflow-worlds/aws-infra build
+pnpm --filter @riacoding/workflow-world-aws-infra build
 
 # 2. (Optional) preview the changes
-pnpm --filter @workflow-worlds/aws-infra run diff -c projectName=myapp -c stage=dev
+pnpm --filter @riacoding/workflow-world-aws-infra run diff -c projectName=myapp -c stage=dev
 
 # 3. Deploy — writes outputs to cdk-outputs.json
-pnpm --filter @workflow-worlds/aws-infra run deploy -c projectName=myapp -c stage=dev
+pnpm --filter @riacoding/workflow-world-aws-infra run deploy -c projectName=myapp -c stage=dev
 
 # 4. Turn the deployed resource identifiers into WORKFLOW_* env vars
-eval "$(pnpm --filter @workflow-worlds/aws-infra print-env)"
+eval "$(pnpm --filter @riacoding/workflow-world-aws-infra print-env)"
 
 # Your shell now has WORKFLOW_AWS_REGION, WORKFLOW_DYNAMODB_TABLE_NAME,
 # WORKFLOW_SQS_QUEUE_URL, WORKFLOW_SQS_QUEUE_ARN, WORKFLOW_SCHEDULER_GROUP_NAME,
 # WORKFLOW_SCHEDULER_ROLE_ARN, WORKFLOW_AWS_LOCAL=false, WORKFLOW_AWS_AUTO_PROVISION=false set.
-# Run your app (WORKFLOW_TARGET_WORLD=@workflow-worlds/aws) in the same shell/process,
+# Run your app (WORKFLOW_TARGET_WORLD=@riacoding/workflow-world-aws) in the same shell/process,
 # or copy these into whatever secret/env store your deployment target uses.
 ```
 
 To tear everything down:
 
 ```bash
-pnpm --filter @workflow-worlds/aws-infra run destroy -c projectName=myapp -c stage=dev
+pnpm --filter @riacoding/workflow-world-aws-infra run destroy -c projectName=myapp -c stage=dev
 ```
 
 ## `recreate-table` (dev convenience)
@@ -91,16 +91,16 @@ typing the table name back to confirm before deleting.
 
 ```bash
 # Reads table name/region from cdk-outputs.json if omitted
-pnpm --filter @workflow-worlds/aws-infra recreate-table
+pnpm --filter @riacoding/workflow-world-aws-infra recreate-table
 
 # Or pass explicitly
-pnpm --filter @workflow-worlds/aws-infra recreate-table -- myapp-dev-workflow
+pnpm --filter @riacoding/workflow-world-aws-infra recreate-table -- myapp-dev-workflow
 
 # Inspect only, no delete
-pnpm --filter @workflow-worlds/aws-infra recreate-table -- myapp-dev-workflow --inspect-only
+pnpm --filter @riacoding/workflow-world-aws-infra recreate-table -- myapp-dev-workflow --inspect-only
 
 # Skip the interactive confirmation (e.g. scripting)
-pnpm --filter @workflow-worlds/aws-infra recreate-table -- myapp-dev-workflow --yes
+pnpm --filter @riacoding/workflow-world-aws-infra recreate-table -- myapp-dev-workflow --yes
 ```
 
 The recreated table's schema is hardcoded in `scripts/recreate-table.sh` to exactly mirror the

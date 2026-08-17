@@ -9,7 +9,7 @@ separate build-and-publish step), and a REST API Gateway with one API key per ap
 
 ## Naming and scope
 
-Unlike [`@workflow-worlds/aws-infra`](../../aws/infra), this stack is meant to be deployed **once,
+Unlike [`@riacoding/workflow-world-aws-infra`](../../aws/infra), this stack is meant to be deployed **once,
 org-wide** — a single shared instance, not one per project:
 
 - No `projectName` context param.

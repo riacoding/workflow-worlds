@@ -1,5 +1,5 @@
 {
-  "name": "@workflow-worlds/aws",
+  "name": "@riacoding/workflow-world-aws",
   "version": "0.1.5",
   "description": "AWS World implementation for Workflow DevKit (DynamoDB, SQS, EventBridge Scheduler, AppSync Events)",
   "author": "Riacoding",
@@ -62,6 +62,6 @@
     "durable-functions"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   }
 }
